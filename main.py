@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
 # 🔐 CONFIGURATION
 # ───────────────────────────────────────────────
 
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 SERVICE_ACCOUNT_FILE = 'credentials.json'
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 DATABASE_ID_SCHEDULE = os.environ.get("DATABASE_ID_SCHEDULE")
@@ -58,6 +58,7 @@ CALENDAR_TYPE_MAP = {
     "Work Routine": "Routine"
 }
 
+CALENDAR_NAME_ID_MAP = {v: k for k, v in CALENDAR_ID_NAME_MAP.items()}
 TARGET_CALENDAR_IDS = list(CALENDAR_ID_NAME_MAP.keys())
 
 # ───────────────────────────────────────────────
@@ -71,7 +72,7 @@ credentials = service_account.Credentials.from_service_account_file(
 calendar_service = build('calendar', 'v3', credentials=credentials, cache_discovery=False)
 
 # ───────────────────────────────────────────────
-# 🔁 SYNC FUNCTION
+# 🔁 SYNC FUNCTION: Google → Notion
 # ───────────────────────────────────────────────
 
 def sync_calendar_to_notion():
@@ -138,21 +139,81 @@ def sync_calendar_to_notion():
                 if duration_minutes is not None:
                     properties["Duration"] = {"number": duration_minutes}
 
-                if not existing["results"]:
-                    notion.pages.create(
-                        parent={"database_id": DATABASE_ID_SCHEDULE},
-                        properties=properties
-                    )
-                    added += 1
-                else:
+                if any(not page.get("archived", False) for page in existing["results"]):
                     notion.pages.update(
                         page_id=existing["results"][0]["id"],
                         properties=properties
                     )
                     updated += 1
+                else:
+                    notion.pages.create(
+                        parent={"database_id": DATABASE_ID_SCHEDULE},
+                        properties=properties
+                    )
+                    added += 1
 
         logging.info(f"Added {added} | Updated {updated}")
         return {"status": "success", "added": added, "updated": updated}
+
+    except Exception as e:
+        logging.error(str(e))
+        return {"status": "error", "message": str(e)}
+
+# ───────────────────────────────────────────────
+# 🔁 PUSH FUNCTION: Notion → Google
+# ───────────────────────────────────────────────
+
+def push_notion_to_calendar():
+    try:
+        logging.debug("Push started")
+        new_pages = notion.databases.query(
+            database_id=DATABASE_ID_SCHEDULE,
+            filter={
+                "property": "GCal ID",
+                "rich_text": {
+                    "is_empty": True
+                }
+            }
+        )["results"]
+
+        pushed = 0
+
+        for page in new_pages:
+            props = page["properties"]
+            title = props["Name"]["title"][0]["text"]["content"]
+            start = props["Start Time"]["date"]["start"]
+            end = props["End Time"]["date"].get("start") if props["End Time"]["date"] else None
+            context = props["Context"]["select"]["name"]
+            type_value = props["Type"]["select"]["name"]
+
+            # Select calendar based on type/context mapping
+            for cal_name, ctx in CALENDAR_CONTEXT_MAP.items():
+                if ctx == context and CALENDAR_TYPE_MAP.get(cal_name) == type_value:
+                    calendar_id = CALENDAR_NAME_ID_MAP.get(cal_name)
+                    break
+            else:
+                logging.warning(f"No calendar found for context: {context}, type: {type_value}")
+                continue
+
+            event = {
+                'summary': title,
+                'start': {'dateTime': start},
+                'end': {'dateTime': end if end else start},
+            }
+
+            created = calendar_service.events().insert(calendarId=calendar_id, body=event).execute()
+            gcal_id = created["id"]
+
+            notion.pages.update(
+                page_id=page["id"],
+                properties={
+                    "GCal ID": {"rich_text": [{"text": {"content": gcal_id}}]}
+                }
+            )
+            pushed += 1
+
+        logging.info(f"Pushed {pushed} events to Google Calendar")
+        return {"status": "success", "pushed": pushed}
 
     except Exception as e:
         logging.error(str(e))
@@ -169,6 +230,12 @@ def home():
 @app.route("/sync", methods=["POST"])
 def sync():
     result = sync_calendar_to_notion()
+    code = 200 if result["status"] == "success" else 500
+    return jsonify(result), code
+
+@app.route("/push", methods=["POST"])
+def push():
+    result = push_notion_to_calendar()
     code = 200 if result["status"] == "success" else 500
     return jsonify(result), code
 
