@@ -7,15 +7,15 @@ from dateutil import parser as dtparser
 import os
 import logging
 
-# ─────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # 🔧 LOGGING CONFIG
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
 
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # 🔐 CONFIGURATION
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 SERVICE_ACCOUNT_FILE = 'credentials.json'
@@ -34,9 +34,9 @@ CONTEXT_TYPE_TO_CALENDAR_ID = {
     ("Work", "Routine"): "a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09@group.calendar.google.com"
 }
 
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # 🌱 INITIALIZATION
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 app = Flask(__name__)
 notion = Client(auth=NOTION_TOKEN)
@@ -44,15 +44,93 @@ credentials = service_account.Credentials.from_service_account_file(
     SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 calendar_service = build('calendar', 'v3', credentials=credentials, cache_discovery=False)
 
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # 🔁 SYNC FUNCTION: Google → Notion
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
-# sync_calendar_to_notion() remains unchanged (you already had it correct)
+def sync_calendar_to_notion():
+    try:
+        logging.debug("Sync started")
+        now = datetime.now(timezone.utc).isoformat()
 
-# ────────────────────────────────────────────────
+        added = 0
+        updated = 0
+
+        for (context, type_value), cal_id in CONTEXT_TYPE_TO_CALENDAR_ID.items():
+            events_result = calendar_service.events().list(
+                calendarId=cal_id,
+                timeMin=now,
+                maxResults=20,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+
+            events = events_result.get('items', [])
+            logging.debug(f"{len(events)} events found in calendar: {cal_id}")
+
+            for event in events:
+                gcal_id = event.get('id')
+                if not gcal_id:
+                    continue
+
+                title = event.get('summary', 'No Title')
+                start = event['start'].get('dateTime') or event['start'].get('date')
+                end = event['end'].get('dateTime') or event['end'].get('date')
+
+                logging.debug(f"Event: {title} | Start: {start} | GCal ID: {gcal_id}")
+
+                try:
+                    start_dt = dtparser.parse(start)
+                    end_dt = dtparser.parse(end)
+                    duration_minutes = int((end_dt - start_dt).total_seconds() / 60)
+                except:
+                    duration_minutes = None
+
+                existing = notion.databases.query(
+                    database_id=DATABASE_ID_SCHEDULE,
+                    filter={
+                        "property": "GCal ID",
+                        "rich_text": {
+                            "equals": gcal_id
+                        }
+                    }
+                )
+
+                properties = {
+                    "Name": {"title": [{"text": {"content": title}}]},
+                    "Start Time": {"date": {"start": start}},
+                    "End Time": {"date": {"start": end}},
+                    "GCal ID": {"rich_text": [{"text": {"content": gcal_id}}]},
+                    "Context": {"select": {"name": context}},
+                    "Type": {"select": {"name": type_value}}
+                }
+
+                if duration_minutes is not None:
+                    properties["Duration"] = {"number": duration_minutes}
+
+                if any(not page.get("archived", False) for page in existing["results"]):
+                    notion.pages.update(
+                        page_id=existing["results"][0]["id"],
+                        properties=properties
+                    )
+                    updated += 1
+                else:
+                    notion.pages.create(
+                        parent={"database_id": DATABASE_ID_SCHEDULE},
+                        properties=properties
+                    )
+                    added += 1
+
+        logging.info(f"Added {added} | Updated {updated}")
+        return {"status": "success", "added": added, "updated": updated}
+
+    except Exception as e:
+        logging.error(str(e))
+        return {"status": "error", "message": str(e)}
+
+# ───────────────────────────────────────────────
 # 🔁 PUSH FUNCTION: Notion → Google
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 def push_notion_to_calendar():
     try:
@@ -106,9 +184,9 @@ def push_notion_to_calendar():
         logging.error(str(e))
         return {"status": "error", "message": str(e)}
 
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # 🌐 FLASK ROUTES
-# ────────────────────────────────────────────────
+# ───────────────────────────────────────────────
 
 @app.route("/")
 def home():
