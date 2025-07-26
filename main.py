@@ -138,18 +138,18 @@ def sync_calendar_to_notion():
                 if duration_minutes is not None:
                     properties["Duration"] = {"number": duration_minutes}
 
-                if any(not page.get("archived", False) for page in existing["results"]):
-                    notion.pages.update(
-                        page_id=existing["results"][0]["id"],
-                        properties=properties
-                    )
-                    updated += 1
-                else:
+                if not existing["results"]:
                     notion.pages.create(
                         parent={"database_id": DATABASE_ID_SCHEDULE},
                         properties=properties
                     )
                     added += 1
+                else:
+                    notion.pages.update(
+                        page_id=existing["results"][0]["id"],
+                        properties=properties
+                    )
+                    updated += 1
 
         logging.info(f"Added {added} | Updated {updated}")
         return {"status": "success", "added": added, "updated": updated}
