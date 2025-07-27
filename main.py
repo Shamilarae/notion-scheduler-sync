@@ -206,7 +206,7 @@ def push_notion_to_calendar():
 def home():
     return "Google Calendar to Notion sync is live!", 200
 
-@app.route("/sync_and_push", methods=["POST"])
+@app.route("/sync_and_push", methods=["GET", "POST"])
 def sync_and_push():
     sync_result = sync_calendar_to_notion()
     push_result = push_notion_to_calendar()
