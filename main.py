@@ -2,20 +2,20 @@ from flask import Flask, request, jsonify
 from notion_client import Client
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dateutil import parser as dtparser
 import os
 import logging
 
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 # 🔧 LOGGING CONFIG
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
 
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 # 🔐 CONFIGURATION
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 SERVICE_ACCOUNT_FILE = 'credentials.json'
@@ -34,9 +34,9 @@ CONTEXT_TYPE_TO_CALENDAR_ID = {
     ("Work", "Routine"): "a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09@group.calendar.google.com"
 }
 
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 # 🌱 INITIALIZATION
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 
 app = Flask(__name__)
 notion = Client(auth=NOTION_TOKEN)
@@ -44,9 +44,9 @@ credentials = service_account.Credentials.from_service_account_file(
     SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 calendar_service = build('calendar', 'v3', credentials=credentials, cache_discovery=False)
 
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 # 🔁 SYNC FUNCTION: Google → Notion
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 
 def sync_calendar_to_notion():
     try:
@@ -128,9 +128,9 @@ def sync_calendar_to_notion():
         logging.error(str(e))
         return {"status": "error", "message": str(e)}
 
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 # 🔁 PUSH FUNCTION: Notion → Google
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 
 def push_notion_to_calendar():
     try:
@@ -153,7 +153,8 @@ def push_notion_to_calendar():
             try:
                 title = props["Name"]["title"][0]["text"]["content"]
                 start = props["Start Time"]["date"]["start"]
-                end = props["End Time"]["date"].get("start") if props["End Time"].get("date") else None
+                end_raw = props["End Time"].get("date")
+                end = end_raw.get("start") if end_raw else None
                 context = props["Context"]["select"]["name"]
                 type_value = props["Type"]["select"]["name"]
             except (KeyError, IndexError, TypeError) as e:
@@ -165,10 +166,18 @@ def push_notion_to_calendar():
                 logging.warning(f"No calendar ID found for context '{context}' and type '{type_value}'")
                 continue
 
+            start_dt = dtparser.parse(start)
+            if end:
+                end_dt = dtparser.parse(end)
+                if end_dt <= start_dt:
+                    end_dt = start_dt + timedelta(minutes=15)
+            else:
+                end_dt = start_dt + timedelta(minutes=15)
+
             event = {
                 'summary': title,
-                'start': {'dateTime': start},
-                'end': {'dateTime': end if end else start},
+                'start': {'dateTime': start_dt.isoformat()},
+                'end': {'dateTime': end_dt.isoformat()},
             }
 
             created = calendar_service.events().insert(calendarId=calendar_id, body=event).execute()
@@ -189,35 +198,22 @@ def push_notion_to_calendar():
         logging.error(str(e))
         return {"status": "error", "message": str(e)}
 
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 # 🌐 FLASK ROUTES
-# ───────────────────────────────────────────────
+# ──────────────────────────────────────────────────
 
 @app.route("/")
 def home():
     return "Google Calendar to Notion sync is live!", 200
 
-@app.route("/sync", methods=["POST"])
-def sync():
-    result = sync_calendar_to_notion()
-    code = 200 if result["status"] == "success" else 500
-    return jsonify(result), code
-
-@app.route("/push", methods=["POST"])
-def push():
-    result = push_notion_to_calendar()
-    code = 200 if result["status"] == "success" else 500
-    return jsonify(result), code
-
 @app.route("/sync_and_push", methods=["POST"])
 def sync_and_push():
     sync_result = sync_calendar_to_notion()
     push_result = push_notion_to_calendar()
-    code = 200 if sync_result["status"] == "success" and push_result["status"] == "success" else 500
     return jsonify({
         "sync": sync_result,
         "push": push_result
-    }), code
+    }), 200 if sync_result["status"] == "success" and push_result["status"] == "success" else 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
