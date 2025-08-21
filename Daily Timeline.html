@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Timeline - Ash's AI Scheduling</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #f5f5f5;
+            padding: 16px;
+            overflow-x: hidden;
+        }
+        
+        .timeline-container {
+            max-width: 400px;
+            margin: 0 auto;
+            position: relative;
+        }
+        
+        .timeline-header {
+            text-align: center;
+            margin-bottom: 24px;
+            padding: 16px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .date {
+            font-size: 24px;
+            font-weight: 600;
+            color: #f5f5f5;
+            margin-bottom: 4px;
+        }
+        
+        .day {
+            font-size: 14px;
+            color: #a0a0a0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .timeline {
+            position: relative;
+        }
+        
+        .time-block {
+            display: flex;
+            margin-bottom: 2px;
+            min-height: 60px;
+            position: relative;
+        }
+        
+        .time-label {
+            width: 80px;
+            font-size: 12px;
+            color: #888;
+            padding: 8px 12px 8px 0;
+            text-align: right;
+            flex-shrink: 0;
+            display: flex;
+            align-items: flex-start;
+            justify-content: flex-end;
+        }
+        
+        .block-content {
+            flex: 1;
+            margin-left: 12px;
+            border-radius: 8px;
+            padding: 12px 16px;
+            position: relative;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.2s ease;
+        }
+        
+        .block-content:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+        
+        .block-title {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 4px;
+            line-height: 1.3;
+        }
+        
+        .block-details {
+            font-size: 12px;
+            opacity: 0.8;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .energy-badge {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        /* Moody forest palette matching your aesthetic */
+        .deep-work {
+            background: linear-gradient(135deg, #2d3a2d 0%, #3e4f3e 100%);
+            border-color: #4a5d4a;
+            color: #e8ede8;
+        }
+        
+        .admin {
+            background: linear-gradient(135deg, #3e3e3e 0%, #525252 100%);
+            border-color: #656565;
+            color: #efefef;
+        }
+        
+        .creative {
+            background: linear-gradient(135deg, #4a5147 0%, #5d6659 100%);
+            border-color: #707a6b;
+            color: #f0f2f0;
+        }
+        
+        .meeting {
+            background: linear-gradient(135deg, #6b7a6b 0%, #7d8e7d 100%);
+            border-color: #8fa18f;
+            color: #f5f7f5;
+        }
+        
+        .break {
+            background: linear-gradient(135deg, #888888 0%, #a0a0a0 100%);
+            border-color: #b3b3b3;
+            color: #1a1a1a;
+        }
+        
+        .riley-time {
+            background: linear-gradient(135deg, #5a6456 0%, #6d7869 100%);
+            border-color: #7f8b7b;
+            color: #f2f4f2;
+        }
+        
+        .personal {
+            background: linear-gradient(135deg, #4d5649 0%, #606b5c 100%);
+            border-color: #737e6f;
+            color: #f1f3f1;
+        }
+        
+        .empty-slot {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px dashed rgba(255, 255, 255, 0.1);
+            color: #666;
+            font-style: italic;
+        }
+        
+        .current-time {
+            position: absolute;
+            left: 92px;
+            right: 0;
+            height: 2px;
+            background: #ff6b6b;
+            z-index: 10;
+            border-radius: 1px;
+        }
+        
+        .current-time::before {
+            content: '';
+            position: absolute;
+            left: -6px;
+            top: -3px;
+            width: 8px;
+            height: 8px;
+            background: #ff6b6b;
+            border-radius: 50%;
+        }
+        
+        .refresh-info {
+            text-align: center;
+            margin-top: 24px;
+            font-size: 12px;
+            color: #666;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+        }
+        
+        @media (max-width: 480px) {
+            .timeline-container {
+                max-width: 100%;
+                padding: 0 8px;
+            }
+            
+            .time-label {
+                width: 60px;
+                font-size: 11px;
+            }
+            
+            .block-content {
+                margin-left: 8px;
+                padding: 10px 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="timeline-container">
+        <div class="timeline-header">
+            <div class="date" id="currentDate">Wednesday, August 21</div>
+            <div class="day" id="currentDay">Today</div>
+        </div>
+        
+        <div class="timeline" id="timeline">
+            <!-- Timeline blocks will be generated here -->
+        </div>
+        
+        <div class="refresh-info">
+            <div>Last updated: <span id="lastUpdate">Just now</span></div>
+            <div style="margin-top: 4px; font-size: 11px;">Ash's AI Scheduling • Updates automatically</div>
+        </div>
+    </div>
+
+    <script>
+        // Sample data structure - this will be populated from Notion
+        const sampleSchedule = [
+            {
+                time: "6:00",
+                endTime: "7:00",
+                title: "Morning Routine",
+                type: "personal",
+                energy: "medium",
+                details: "Coffee, shower, get ready"
+            },
+            {
+                time: "7:00",
+                endTime: "8:00",
+                title: "Morning Log & Planning",
+                type: "admin",
+                energy: "high",
+                details: "Fill out morning ritual, review day"
+            },
+            {
+                time: "8:00",
+                endTime: "10:30",
+                title: "Deep Work: Processing Analysis",
+                type: "deep-work",
+                energy: "high",
+                details: "Project focus time",
+                project: "Processing Gold Concentrate"
+            },
+            {
+                time: "10:30",
+                endTime: "10:45",
+                title: "Break",
+                type: "break",
+                energy: "low",
+                details: "Stretch, water, fresh air"
+            },
+            {
+                time: "10:45",
+                endTime: "12:00",
+                title: "Admin & Email",
+                type: "admin",
+                energy: "medium",
+                details: "Communications, planning"
+            },
+            {
+                time: "12:00",
+                endTime: "13:00",
+                title: "Lunch Break",
+                type: "break",
+                energy: "low",
+                details: "Eat, walk, recharge"
+            },
+            {
+                time: "13:00",
+                endTime: "15:00",
+                title: "Creative Work: System Design",
+                type: "creative",
+                energy: "medium",
+                details: "Notion optimization"
+            },
+            {
+                time: "15:00",
+                endTime: "16:00",
+                title: "Riley Time",
+                type: "riley-time",
+                energy: "medium",
+                details: "Quality time, activities"
+            },
+            {
+                time: "16:00",
+                endTime: "17:30",
+                title: "Meeting Prep & Calls",
+                type: "meeting",
+                energy: "medium",
+                details: "Prepare for tomorrow"
+            },
+            {
+                time: "17:30",
+                endTime: "18:00",
+                title: "Day Review",
+                type: "admin",
+                energy: "low",
+                details: "Reflect, plan tomorrow"
+            }
+        ];
+
+        function generateTimeline(schedule) {
+            const timeline = document.getElementById('timeline');
+            const currentTime = new Date();
+            const currentHour = currentTime.getHours();
+            const currentMinute = currentTime.getMinutes();
+            
+            let html = '';
+            
+            schedule.forEach((block, index) => {
+                const [hour, minute] = block.time.split(':').map(Number);
+                const blockTime = hour + minute / 60;
+                const currentTimeDecimal = currentHour + currentMinute / 60;
+                
+                // Add current time indicator
+                if (index === 0 || (blockTime > currentTimeDecimal && schedule[index - 1] && 
+                    (schedule[index - 1].time.split(':').map(Number)[0] + 
+                     schedule[index - 1].time.split(':').map(Number)[1] / 60) <= currentTimeDecimal)) {
+                    html += `<div class="current-time" style="top: ${index * 62 + 8}px;"></div>`;
+                }
+                
+                html += `
+                    <div class="time-block">
+                        <div class="time-label">${block.time}</div>
+                        <div class="block-content ${block.type}">
+                            <div class="block-title">${block.title}</div>
+                            <div class="block-details">
+                                <span class="energy-badge">${block.energy} energy</span>
+                                ${block.project ? `<span>• ${block.project}</span>` : ''}
+                                ${block.details ? `<span>• ${block.details}</span>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            timeline.innerHTML = html;
+        }
+
+        function updateDateTime() {
+            const now = new Date();
+            const options = { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+            };
+            document.getElementById('currentDate').textContent = now.toLocaleDateString('en-US', options);
+            document.getElementById('lastUpdate').textContent = now.toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+        }
+
+        // Initialize the timeline
+        generateTimeline(sampleSchedule);
+        updateDateTime();
+        
+        // Update time every minute
+        setInterval(updateDateTime, 60000);
+        
+        // This function will be called by the automation to update with real data
+        window.updateSchedule = function(newSchedule) {
+            generateTimeline(newSchedule);
+            updateDateTime();
+        };
+        
+        // Auto-refresh from Notion data (will be implemented with cloud automation)
+        // setInterval(() => {
+        //     // Fetch latest schedule from cloud endpoint
+        //     // updateSchedule(fetchedData);
+        // }, 300000); // Every 5 minutes
+    </script>
+</body>
+</html>
