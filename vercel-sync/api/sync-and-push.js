@@ -22,9 +22,9 @@ const notion = new Client({ auth: NOTION_TOKEN });
 let calendar;
 try {
   const auth = new google.auth.GoogleAuth({
-    keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY, // Will be a JSON string in Vercel
-    scopes: ['https://www.googleapis.com/auth/calendar']
-  });
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY),
+  scopes: ['https://www.googleapis.com/auth/calendar']
+});
   calendar = google.calendar({ version: 'v3', auth });
 } catch (error) {
   console.error('Google Calendar auth failed:', error);
