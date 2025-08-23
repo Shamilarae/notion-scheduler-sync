@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "api/sync-and-push.js": {
+      "maxDuration": 30
+    }
+  },
+  "env": {
+    "NOTION_TOKEN": "@notion_token",
+    "DATABASE_ID_SCHEDULE": "@database_id_schedule", 
+    "GOOGLE_SERVICE_ACCOUNT_KEY": "@google_service_account_key"
+  }
+}

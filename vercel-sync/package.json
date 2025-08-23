@@ -1,0 +1,12 @@
+{
+  "name": "shamila-calendar-sync",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@notionhq/client": "^2.2.15",
+    "googleapis": "^128.0.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
