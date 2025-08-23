@@ -5,8 +5,10 @@
     }
   },
   "env": {
-    "NOTION_TOKEN": "@notion_token",
-    "DATABASE_ID_SCHEDULE": "@database_id_schedule", 
-    "GOOGLE_SERVICE_ACCOUNT_KEY": "@google_service_account_key"
+    "NOTION_TOKEN": "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",
+    "DATABASE_ID_SCHEDULE": "2399f86b4f8e80c98bb3e100c5915bbb", 
+    "GOOGLE_SERVICE_ACCOUNT_KEY": ""{"installed":{"client_id":"287692759498-m275u0uk5fmdh2f4q4sc6ivrso68bi1s.apps.googleusercontent.com","project_id":"notion-scheduler-466922","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","client_secret":"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","redirect_uris":["http://localhost"]}}"
+  }
+}"
   }
 }
