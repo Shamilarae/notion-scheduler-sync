@@ -1,11 +1,11 @@
 // api/status.js
-import { Client } from '@notionhq/client';
+const { Client } = require('@notionhq/client');
 
 const notion = new Client({
     auth: process.env.NOTION_TOKEN
 });
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
     try {
         // Test Notion connection by checking if we can access the databases
         const timeBlocksTest = await notion.databases.retrieve('2569f86b4f8e80439779e754eca8a066');
@@ -38,4 +38,4 @@ export default async function handler(req, res) {
             }
         });
     }
-}
+};
