@@ -4,15 +4,13 @@
   "description": "AI-powered daily scheduling with Notion integration",
   "main": "index.js",
   "scripts": {
-    "dev": "vercel dev",
-    "build": "vercel build",
-    "deploy": "vercel deploy"
+    "build": "echo 'Build complete'",
+    "start": "echo 'Start complete'"
   },
   "dependencies": {
     "@notionhq/client": "^2.2.15"
   },
-  "devDependencies": {},
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   }
 }
