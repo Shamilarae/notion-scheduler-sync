@@ -62,48 +62,30 @@ if (morningLog.results.length > 0) {
         });
 
         // Transform the data for the timeline
-        // Context detection
-const currentHour = new Date().getHours();
-const isWorkTime = currentHour >= 5.5 && currentHour <= 17.5; // 5:30 AM - 5:30 PM
+        const schedule = timeBlocks.results.map(block => {
+            const startTime = block.properties['Start Time']?.date?.start;
+            const endTime = block.properties['End Time']?.date?.start;
+            const title = block.properties.Title?.title[0]?.text?.content || 'Untitled Block';
+            const blockType = block.properties['Block Type']?.select?.name || 'personal';
+            const energy = block.properties['Energy Requirements']?.select?.name || 'medium';
 
-// Transform the data for the timeline
-const schedule = timeBlocks.results.map(block => {
-    const startTime = block.properties['Start Time']?.date?.start;
-    const endTime = block.properties['End Time']?.date?.start;
-    const title = block.properties.Title?.title[0]?.text?.content || 'Untitled Block';
-    const blockType = block.properties['Block Type']?.select?.name || 'personal';
-    const energy = block.properties['Energy Requirements']?.select?.name || 'medium';
+            // Convert ISO to Pacific time format
+            const start = startTime ? new Date(startTime) : null;
+            const end = endTime ? new Date(endTime) : null;
+            
+            // Convert to Pacific Time
+            const startPacific = start ? new Date(start.getTime() - (8 * 60 * 60 * 1000)) : null;
+            const endPacific = end ? new Date(end.getTime() - (8 * 60 * 60 * 1000)) : null;
 
-    // Context-based filtering
-    if (isWorkTime) {
-        // During work hours, filter out personal/family blocks
-        if (['riley-time', 'riley time', 'family', 'personal', 'crafting', 'journaling'].includes(blockType.toLowerCase())) {
-            return null;
-        }
-    } else {
-        // During home time, deprioritize work blocks unless urgent
-        if (blockType.toLowerCase() === 'routine work' && !title.toLowerCase().includes('urgent')) {
-            return null;
-        }
-    }
-
-    // Convert UTC to Pacific Time - subtract 7 hours for PDT
-    const start = startTime ? new Date(startTime) : null;
-    const end = endTime ? new Date(endTime) : null;
-    
-    const startPacific = start ? new Date(start.getTime() - (7 * 60 * 60 * 1000)) : null;
-    const endPacific = end ? new Date(end.getTime() - (7 * 60 * 60 * 1000)) : null;
-
-    return {
-        time: startPacific ? `${startPacific.getUTCHours().toString().padStart(2, '0')}:${startPacific.getUTCMinutes().toString().padStart(2, '0')}` : '',
-        endTime: endPacific ? `${endPacific.getUTCHours().toString().padStart(2, '0')}:${endPacific.getUTCMinutes().toString().padStart(2, '0')}` : '',
-        title,
-        type: blockType.toLowerCase().replace(/\s+/g, '-'),
-        energy: energy.toLowerCase(),
-        details: `${energy} energy required`,
-        context: isWorkTime ? 'work' : 'home'
-    };
-}).filter(block => block !== null && block.time);
+            return {
+                time: startPacific ? `${startPacific.getUTCHours().toString().padStart(2, '0')}:${startPacific.getUTCMinutes().toString().padStart(2, '0')}` : '',
+                endTime: endPacific ? `${endPacific.getUTCHours().toString().padStart(2, '0')}:${endPacific.getUTCMinutes().toString().padStart(2, '0')}` : '',
+                title,
+                type: blockType.toLowerCase().replace(/\s+/g, '-'),
+                energy: energy.toLowerCase(),
+                details: `${energy} energy required`
+            };
+        }).filter(block => block.time); // Remove blocks without start time
 
         // If no blocks, create a basic structure starting from wake time
         if (schedule.length === 0) {
