@@ -3,33 +3,38 @@ module.exports = async function handler(req, res) {
     const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
     
     try {
-        const today = new Date().toISOString().split('T')[0];
-        
-        // Get today's morning log
-        const morningLogResponse = await fetch(`https://api.notion.com/v1/databases/${DAILY_LOGS_DB_ID}/query`, {
-            method: 'POST',
+        const response = await fetch(`https://api.notion.com/v1/databases/${TIME_BLOCKS_DB_ID}`, {
+            method: 'GET',
             headers: {
                 'Authorization': `Bearer ${process.env.NOTION_TOKEN}`,
                 'Notion-Version': '2022-06-28',
                 'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                filter: {
-                    property: 'Date',
-                    date: { equals: today }
-                },
-                sorts: [{ timestamp: 'created_time', direction: 'descending' }],
-                page_size: 1
-            })
+            }
         });
         
-        const morningLogData = await morningLogResponse.json();
+        if (!response.ok) {
+            const errorText = await response.text();
+            return res.status(500).json({
+                error: `Notion API error: ${response.status} ${response.statusText}`,
+                details: errorText
+            });
+        }
         
-        // Calculate wake time
-        let wakeTime = '4:30';
-        if (morningLogData.results?.length > 0) {
-            const wakeTimeRaw = morningLogData.results[0].properties['Wake Time']?.date?.start;
-            if (wakeTimeRaw) {
-                const wake = new Date(wakeTimeRaw);
-                const pacificHours = wake.getUTCHours() - 7;
-                const pacificMinutes =
+        const data = await response.json();
+        
+        res.status(200).json({
+            timestamp: new Date().toISOString(),
+            notion_connection: 'Connected ✅',
+            database_title: data.title?.[0]?.plain_text || 'Unknown',
+            node_version: process.version,
+            token_present: !!process.env.NOTION_TOKEN
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            timestamp: new Date().toISOString(),
+            error: error.message,
+            token_present: !!process.env.NOTION_TOKEN
+        });
+    }
+};
