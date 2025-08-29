@@ -1,0 +1,14 @@
+{
+  "name": "shamila-ai-scheduler",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "build": "echo 'Static build complete'"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.2.15"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}
