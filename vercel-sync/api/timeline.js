@@ -9,10 +9,8 @@ const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
 
 module.exports = async function handler(req, res) {
     try {
-        // Get today's date
         const today = new Date().toISOString().split('T')[0];
         
-        // Get today's morning log to find wake time
         const morningLog = await notion.databases.query({
             database_id: DAILY_LOGS_DB_ID,
             filter: {
@@ -30,20 +28,17 @@ module.exports = async function handler(req, res) {
             page_size: 1
         });
 
-        // Fixed wake time logic
-        let wakeTime = '4:30'; // Fallback based on your morning log
+        let wakeTime = '4:30';
         if (morningLog.results.length > 0) {
             const wakeTimeRaw = morningLog.results[0].properties['Wake Time']?.date?.start;
             if (wakeTimeRaw) {
                 const wake = new Date(wakeTimeRaw);
-                // Convert UTC to Pacific Time - subtract 7 hours for PDT
                 const pacificHours = wake.getUTCHours() - 7;
                 const pacificMinutes = wake.getUTCMinutes();
                 wakeTime = `${pacificHours.toString().padStart(2, '0')}:${pacificMinutes.toString().padStart(2, '0')}`;
             }
         }
 
-        // Get today's time blocks
         const timeBlocks = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
@@ -60,11 +55,9 @@ module.exports = async function handler(req, res) {
             ]
         });
 
-        // Context detection
         const currentHour = new Date().getHours();
-        const isWorkTime = currentHour >= 5.5 && currentHour <= 17.5; // 5:30 AM - 5:30 PM
+        const isWorkTime = currentHour >= 5.5 && currentHour <= 17.5;
 
-        // Transform the data for the timeline
         const schedule = timeBlocks.results.map(block => {
             const startTime = block.properties['Start Time']?.date?.start;
             const endTime = block.properties['End Time']?.date?.start;
@@ -72,20 +65,16 @@ module.exports = async function handler(req, res) {
             const blockType = block.properties['Block Type']?.select?.name || 'personal';
             const energy = block.properties['Energy Requirements']?.select?.name || 'medium';
 
-            // Context-based filtering
             if (isWorkTime) {
-                // During work hours, filter out personal/family blocks
                 if (['riley-time', 'riley time', 'family', 'personal'].includes(blockType.toLowerCase())) {
                     return null;
                 }
             } else {
-                // During home time, deprioritize routine work unless urgent
                 if (blockType.toLowerCase() === 'routine work' && !title.toLowerCase().includes('urgent')) {
                     return null;
                 }
             }
 
-            // Convert UTC to Pacific Time - subtract 7 hours for PDT
             const start = startTime ? new Date(startTime) : null;
             const end = endTime ? new Date(endTime) : null;
             
@@ -102,7 +91,6 @@ module.exports = async function handler(req, res) {
             };
         }).filter(block => block !== null && block.time);
 
-        // If no blocks, create a basic structure starting from wake time
         if (schedule.length === 0) {
             const wakeHour = parseInt(wakeTime.split(':')[0]);
             const wakeMinute = parseInt(wakeTime.split(':')[1]);
