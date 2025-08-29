@@ -4,7 +4,6 @@ const notion = new Client({
     auth: process.env.NOTION_TOKEN
 });
 
-// Define the database IDs as constants
 const TIME_BLOCKS_DB_ID = '2569f86b4f8e80439779e754eca8a066';
 const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
 
@@ -34,6 +33,10 @@ module.exports = async function handler(req, res) {
             timestamp: new Date().toISOString(),
             notion_connection: 'Failed ❌',
             error: error.message,
+            database_ids_debug: {
+                time_blocks: TIME_BLOCKS_DB_ID,
+                daily_logs: DAILY_LOGS_DB_ID
+            },
             environment: {
                 has_notion_token: !!process.env.NOTION_TOKEN
             }
