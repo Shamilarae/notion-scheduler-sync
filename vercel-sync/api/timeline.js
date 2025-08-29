@@ -31,16 +31,18 @@ export default async function handler(req, res) {
             page_size: 1
         });
 
-        let wakeTime = '3:45'; // Your actual wake time today
-        if (morningLog.results.length > 0) {
-            const wakeTimeRaw = morningLog.results[0].properties['Wake Time']?.date?.start;
-            if (wakeTimeRaw) {
-                // Convert UTC to Pacific Time (your timezone)
-                const wake = new Date(wakeTimeRaw);
-                const pacificTime = new Date(wake.getTime() - (8 * 60 * 60 * 1000)); // PST offset
-                wakeTime = `${pacificTime.getUTCHours().toString().padStart(2, '0')}:${pacificTime.getUTCMinutes().toString().padStart(2, '0')}`;
-            }
+      let wakeTime = '3:45'; // Your actual wake time today
+if (morningLog.results.length > 0) {
+    const wakeTimeRaw = morningLog.results[0].properties['Wake Time']?.date?.start;
+    if (wakeTimeRaw) {
+        const wake = new Date(wakeTimeRaw);
+        const pacificWake = wake.toLocaleString("en-US", {timeZone: "America/Los_Angeles"});
+        const timeMatch = pacificWake.match(/(\d{1,2}):(\d{2})/);
+        if (timeMatch) {
+            wakeTime = `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`;
         }
+    }
+}
 
         // Get today's time blocks
         const timeBlocks = await notion.databases.query({
