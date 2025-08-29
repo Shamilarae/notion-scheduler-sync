@@ -1,16 +1,14 @@
 {
   "name": "shamila-ai-scheduler",
   "version": "1.0.0",
-  "description": "AI-powered daily scheduling with Notion integration",
-  "main": "index.js",
+  "type": "commonjs",
   "scripts": {
-    "build": "echo 'Build complete'",
-    "start": "echo 'Start complete'"
+    "build": "echo 'Static build complete'"
   },
   "dependencies": {
     "@notionhq/client": "^2.2.15"
   },
   "engines": {
-    "node": "22.x"
+    "node": "20.x"
   }
 }
