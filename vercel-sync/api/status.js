@@ -14,6 +14,10 @@ module.exports = async function handler(req, res) {
             notion_connection: 'Connected ✅',
             time_blocks_db: timeBlocksTest?.title?.[0]?.plain_text || 'Time Blocks',
             daily_logs_db: dailyLogsTest?.title?.[0]?.plain_text || 'Daily Logs',
+            node_version: process.version,
+            environment: {
+                has_notion_token: !!process.env.NOTION_TOKEN
+            }
         };
         
         res.status(200).json(status);
@@ -21,7 +25,10 @@ module.exports = async function handler(req, res) {
         res.status(500).json({
             timestamp: new Date().toISOString(),
             notion_connection: 'Failed ❌',
-            error: error.message
+            error: error.message,
+            environment: {
+                has_notion_token: !!process.env.NOTION_TOKEN
+            }
         });
     }
 };
