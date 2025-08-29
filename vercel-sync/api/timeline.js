@@ -1,5 +1,4 @@
-// api/timeline.js - This will be your Vercel serverless function
-import { Client } from '@notionhq/client';
+const { Client } = require('@notionhq/client');
 
 const notion = new Client({
     auth: process.env.NOTION_TOKEN
@@ -8,7 +7,7 @@ const notion = new Client({
 const TIME_BLOCKS_DB_ID = '2569f86b4f8e80439779e754eca8a066';
 const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
     try {
         // Get today's date
         const today = new Date().toISOString().split('T')[0];
@@ -31,18 +30,18 @@ export default async function handler(req, res) {
             page_size: 1
         });
 
-      let wakeTime = '3:45'; // Your actual wake time today
-if (morningLog.results.length > 0) {
-    const wakeTimeRaw = morningLog.results[0].properties['Wake Time']?.date?.start;
-    if (wakeTimeRaw) {
-        const wake = new Date(wakeTimeRaw);
-        const pacificWake = wake.toLocaleString("en-US", {timeZone: "America/Los_Angeles"});
-        const timeMatch = pacificWake.match(/(\d{1,2}):(\d{2})/);
-        if (timeMatch) {
-            wakeTime = `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`;
+        // Fixed wake time logic
+        let wakeTime = '4:30'; // Fallback based on your morning log
+        if (morningLog.results.length > 0) {
+            const wakeTimeRaw = morningLog.results[0].properties['Wake Time']?.date?.start;
+            if (wakeTimeRaw) {
+                const wake = new Date(wakeTimeRaw);
+                // Convert UTC to Pacific Time - subtract 7 hours for PDT
+                const pacificHours = wake.getUTCHours() - 7;
+                const pacificMinutes = wake.getUTCMinutes();
+                wakeTime = `${pacificHours.toString().padStart(2, '0')}:${pacificMinutes.toString().padStart(2, '0')}`;
+            }
         }
-    }
-}
 
         // Get today's time blocks
         const timeBlocks = await notion.databases.query({
@@ -61,6 +60,10 @@ if (morningLog.results.length > 0) {
             ]
         });
 
+        // Context detection
+        const currentHour = new Date().getHours();
+        const isWorkTime = currentHour >= 5.5 && currentHour <= 17.5; // 5:30 AM - 5:30 PM
+
         // Transform the data for the timeline
         const schedule = timeBlocks.results.map(block => {
             const startTime = block.properties['Start Time']?.date?.start;
@@ -69,13 +72,25 @@ if (morningLog.results.length > 0) {
             const blockType = block.properties['Block Type']?.select?.name || 'personal';
             const energy = block.properties['Energy Requirements']?.select?.name || 'medium';
 
-            // Convert ISO to Pacific time format
+            // Context-based filtering
+            if (isWorkTime) {
+                // During work hours, filter out personal/family blocks
+                if (['riley-time', 'riley time', 'family', 'personal'].includes(blockType.toLowerCase())) {
+                    return null;
+                }
+            } else {
+                // During home time, deprioritize routine work unless urgent
+                if (blockType.toLowerCase() === 'routine work' && !title.toLowerCase().includes('urgent')) {
+                    return null;
+                }
+            }
+
+            // Convert UTC to Pacific Time - subtract 7 hours for PDT
             const start = startTime ? new Date(startTime) : null;
             const end = endTime ? new Date(endTime) : null;
             
-            // Convert to Pacific Time
-            const startPacific = start ? new Date(start.getTime() - (8 * 60 * 60 * 1000)) : null;
-            const endPacific = end ? new Date(end.getTime() - (8 * 60 * 60 * 1000)) : null;
+            const startPacific = start ? new Date(start.getTime() - (7 * 60 * 60 * 1000)) : null;
+            const endPacific = end ? new Date(end.getTime() - (7 * 60 * 60 * 1000)) : null;
 
             return {
                 time: startPacific ? `${startPacific.getUTCHours().toString().padStart(2, '0')}:${startPacific.getUTCMinutes().toString().padStart(2, '0')}` : '',
@@ -85,7 +100,7 @@ if (morningLog.results.length > 0) {
                 energy: energy.toLowerCase(),
                 details: `${energy} energy required`
             };
-        }).filter(block => block.time); // Remove blocks without start time
+        }).filter(block => block !== null && block.time);
 
         // If no blocks, create a basic structure starting from wake time
         if (schedule.length === 0) {
@@ -126,4 +141,4 @@ if (morningLog.results.length > 0) {
             details: error.message 
         });
     }
-}
+};
