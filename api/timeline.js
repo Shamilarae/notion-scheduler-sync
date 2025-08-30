@@ -1,4 +1,113 @@
-const { Client } = require('@notionhq/client');
+async function detectWorkContext(today) {
+    if (!calendar) {
+        console.log('📅 No Google Calendar access - defaulting to home context');
+        return { location: 'home', type: 'default', workEvents: [] };
+    }
+
+    try {
+        console.log('📅 Checking Google Calendar for work context...');
+        
+        // Get today's date range
+        const startOfDay = new Date(`${today}T00:00:00-07:00`).toISOString();
+        const endOfDay = new Date(`${today}T23:59:59-07:00`).toISOString();
+
+        // Check work-related calendars for rotation indicators
+        const workCalendars = [
+            'oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com', // Work Travel
+            '25a2b77c6b27260126cdf6171f6acee428b838e43615a6bbef498d8138047014@group.calendar.google.com', // Work Admin
+            '09b6f8683cb5c58381f1ce55fb75d56f644187db041705dc85cec04d279cb7bb@group.calendar.google.com', // Work Deep Work
+            'a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09@group.calendar.google.com' // Work Routine
+        ];
+
+        let allWorkEvents = [];
+        
+        for (const calendarId of workCalendars) {
+            try {
+                const response = await calendar.events.list({
+                    calendarId: calendarId,
+                    timeMin: startOfDay,
+                    timeMax: endOfDay,
+                    singleEvents: true,
+                    orderBy: 'startTime'
+                });
+
+                if (response.data.items) {
+                    allWorkEvents.push(...response.data.items.map(event => ({
+                        ...event,
+                        calendarType: getCalendarType(calendarId)
+                    })));
+                }
+            } catch (calError) {
+                console.warn(`⚠️ Could not access calendar ${calendarId}:`, calError.message);
+            }
+        }
+
+        console.log(`📊 Found ${allWorkEvents.length} work events today`);
+
+        // Analyze events for rotation indicators
+        const rotationKeywords = [
+            'rotation', 'site', 'camp', 'field', 'remote', 'away',
+            'fly in', 'fly out', 'offshore', 'project site', 'location',
+            'travel', 'deployment', 'assignment'
+        ];
+
+        const travelEvents = allWorkEvents.filter(event => 
+            event.calendarType === 'travel' || 
+            rotationKeywords.some(keyword => 
+                event.summary?.toLowerCase().includes(keyword) ||
+                event.description?.toLowerCase().includes(keyword)
+            )
+        );
+
+        const isOnRotation = travelEvents.length > 0 || 
+            allWorkEvents.some(event => event.summary?.toLowerCase().includes('rotation'));
+
+        const context = {
+            location: isOnRotation ? 'rotation' : 'home',
+            type: isOnRotation ? 'field_work' : 'home_based',
+            workEvents: allWorkEvents,
+            travelEvents: travelEvents,
+            totalWorkEvents: allWorkEvents.length
+        };
+
+        console.log(`🎯 Context analysis: ${context.location} (${travelEvents.length} travel events)`);
+        return context;
+
+    } catch (error) {
+        console.error('❌ Failed to detect work context from calendar:', error.message);
+        return { location: 'home', type: 'fallback', workEvents: [] };
+    }
+}
+
+function getCalendarType(calendarId) {
+    if (calendarId.includes('oqfs36dkqfqhpkrpsmd146kfm4')) return 'travel';
+    if (calendarId.includes('25a2b77c6b27260126cdf6171f6acee428b838e43615a6bbef498d8138047014')) return 'admin';
+    if (calendarId.includes('09b6f8683cb5c58381f1ce55fb75d56f644187db041705dc85cec04d279cb7bb')) return 'deep_work';
+    if (calendarId.includes('a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09')) return 'routine';
+    return 'unknown';
+}const { Client } = require('@notionhq/client');
+const { google } = require('googleapis');
+
+const notion = new Client({
+    auth: process.env.NOTION_TOKEN
+});
+
+// Initialize Google Calendar
+let calendar = null;
+try {
+    if (process.env.GOOGLE_SERVICE_ACCOUNT) {
+        const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+        const auth = new google.auth.JWT(
+            credentials.client_email,
+            null,
+            credentials.private_key,
+            ['https://www.googleapis.com/auth/calendar.readonly']
+        );
+        calendar = google.calendar({ version: 'v3', auth });
+    }
+} catch (error) {
+    console.warn('⚠️ Google Calendar not configured:', error.message);
+}
 
 const notion = new Client({
     auth: process.env.NOTION_TOKEN
@@ -202,7 +311,14 @@ function generateIntelligentSchedule(morningData) {
     schedule.push(createBlock('Lunch & Recharge Time', currentTime, 60, 'Break', 'Low'));
     currentTime = addMinutes(currentTime, 60);
 
-    // Afternoon blocks - adjusted for social battery
+    // Context detection - Are you home or on rotation?
+    const context = await detectWorkContext(today);
+    console.log(`🏠 Work context detected: ${context.location} (${context.type})`);
+
+    console.log(`🎯 Starting afternoon schedule from: ${currentTime}`);
+    console.log(`📊 Adjusted energy level: ${adjustedEnergy}`);
+    console.log(`🧠 Focus capacity: ${focusCapacity}`);
+    console.log(`🔋 Social battery: ${socialBattery}`);
     if (socialBattery === 'Drained') {
         console.log('🔋 Social battery drained - solo work mode');
         schedule.push(createBlock('Solo Deep Work Session', currentTime, 90, 'Deep Work', 'Medium'));
@@ -221,76 +337,117 @@ function generateIntelligentSchedule(morningData) {
     }
 
     // Continue afternoon work until 5:30PM
-    const endOfWorkDay = '17:30'; // 5:30 PM
-    while (timeToMinutes(currentTime) < timeToMinutes(endOfWorkDay)) {
-        const remainingWorkTime = timeToMinutes(endOfWorkDay) - timeToMinutes(currentTime);
+    console.log(`🕐 Current time before afternoon blocks: ${currentTime}`);
+    
+    // Fill the rest of the workday until 5:30 PM
+    while (currentTime < '17:30') {
+        const currentMinutes = timeToMinutes(currentTime);
+        const endOfDayMinutes = timeToMinutes('17:30');
+        const remainingMinutes = endOfDayMinutes - currentMinutes;
         
-        if (remainingWorkTime >= 90) {
-            // Long work block
+        console.log(`⏰ Remaining work time: ${remainingMinutes} minutes from ${currentTime}`);
+        
+        if (remainingMinutes <= 0) break;
+        
+        if (remainingMinutes >= 90) {
+            // 90-minute work block
             if (adjustedEnergy >= 6) {
-                schedule.push(createBlock('Afternoon Focus Block', currentTime, 90, 'Deep Work', 'Medium'));
+                schedule.push(createBlock('Afternoon Deep Work', currentTime, 90, 'Deep Work', 'Medium'));
             } else {
-                schedule.push(createBlock('Afternoon Admin Work', currentTime, 90, 'Admin', 'Low'));
+                schedule.push(createBlock('Afternoon Admin Block', currentTime, 90, 'Admin', 'Medium'));
             }
             currentTime = addMinutes(currentTime, 90);
-        } else if (remainingWorkTime >= 45) {
-            // Medium work block
-            schedule.push(createBlock('End-of-Day Tasks', currentTime, remainingWorkTime, 'Admin', 'Low'));
-            currentTime = addMinutes(currentTime, remainingWorkTime);
-        } else if (remainingWorkTime > 0) {
-            // Short wrap-up
-            schedule.push(createBlock('Day Wrap-up', currentTime, remainingWorkTime, 'Admin', 'Low'));
-            currentTime = addMinutes(currentTime, remainingWorkTime);
+        } else if (remainingMinutes >= 60) {
+            // 60-minute work block
+            schedule.push(createBlock('End-of-Day Work', currentTime, 60, 'Admin', 'Medium'));
+            currentTime = addMinutes(currentTime, 60);
+        } else if (remainingMinutes >= 30) {
+            // 30+ minute block
+            schedule.push(createBlock('Day Wrap-up Tasks', currentTime, remainingMinutes, 'Admin', 'Low'));
+            currentTime = addMinutes(currentTime, remainingMinutes);
+        } else {
+            // Less than 30 minutes - just finish
+            schedule.push(createBlock('Final Tasks', currentTime, remainingMinutes, 'Admin', 'Low'));
+            break;
         }
     }
+    
+    console.log(`✅ Finished work blocks at: ${currentTime}`);
 
-    // EVENING SCHEDULE - After 5:30PM
-    currentTime = '17:30'; // Ensure we start evening at 5:30
+    // EVENING SCHEDULE - After 5:30PM work ends
+    console.log('🌅 Starting evening schedule at 5:30 PM');
+    currentTime = '17:30'; // Ensure we start evening at exactly 5:30
 
-    // Transition time
-    schedule.push(createBlock('Work to Home Transition', currentTime, 15, 'Break', 'Low'));
+    // Calculate bedtime first so we can plan backwards
+    const bedtimeData = calculateOptimalBedtime(morningData);
+    console.log(`🛏️ Calculated bedtime: ${bedtimeData.bedtime} (${bedtimeData.sleepHours}h sleep target)`);
+
+    // Transition from work to personal time
+    schedule.push(createBlock('Work to Personal Transition', currentTime, 15, 'Break', 'Low'));
     currentTime = addMinutes(currentTime, 15);
 
-    // Family time - sacred time
-    schedule.push(createBlock('Riley Time - Family Priority', currentTime, 90, 'Riley Time', 'Medium'));
-    currentTime = addMinutes(currentTime, 90);
+    // CONTEXT-AWARE EVENING BLOCKS
+    if (context.location === 'home') {
+        // At home - family time is priority
+        schedule.push(createBlock('Riley Time - Family Priority', currentTime, 90, 'Riley Time', 'Medium'));
+        currentTime = addMinutes(currentTime, 90);
+        
+        schedule.push(createBlock('Family Dinner Time', currentTime, 60, 'Personal', 'Low'));
+        currentTime = addMinutes(currentTime, 60);
+    } else {
+        // On rotation - no family, focus on personal wellbeing
+        schedule.push(createBlock('Personal Decompression', currentTime, 60, 'Personal', 'Low'));
+        currentTime = addMinutes(currentTime, 60);
+        
+        schedule.push(createBlock('Dinner (Solo/Crew)', currentTime, 45, 'Personal', 'Low'));
+        currentTime = addMinutes(currentTime, 45);
+        
+        // Extra personal time since no family obligations
+        schedule.push(createBlock('Personal Projects/Hobbies', currentTime, 60, 'Personal', 'Low'));
+        currentTime = addMinutes(currentTime, 60);
+    }
 
-    // Dinner time
-    schedule.push(createBlock('Dinner & Family Time', currentTime, 60, 'Personal', 'Low'));
-    currentTime = addMinutes(currentTime, 60);
-
-    // Evening personal time
-    schedule.push(createBlock('Personal/Hobby Time', currentTime, 60, 'Personal', 'Low'));
-    currentTime = addMinutes(currentTime, 60);
-
-    // Calculate bedtime based on tomorrow's wake time and sleep needs
-    const bedtimeData = calculateOptimalBedtime(morningData);
-    
-    // Evening routine leading to bedtime
+    // Fill evening until bedtime routine
     const eveningRoutineStart = addMinutes(bedtimeData.bedtime, -60); // 1 hour before bed
+    console.log(`🌙 Evening routine starts at: ${eveningRoutineStart}`);
     
-    // Fill time between current time and evening routine
-    const timeGap = timeToMinutes(eveningRoutineStart) - timeToMinutes(currentTime);
-    if (timeGap > 0) {
-        if (timeGap >= 90) {
-            schedule.push(createBlock('Free Time/Relaxation', currentTime, 60, 'Personal', 'Low'));
+    // Fill the gap between current time and evening routine
+    while (currentTime < eveningRoutineStart) {
+        const currentMinutes = timeToMinutes(currentTime);
+        const routineStartMinutes = timeToMinutes(eveningRoutineStart);
+        const remainingMinutes = routineStartMinutes - currentMinutes;
+        
+        console.log(`🕐 Evening time remaining: ${remainingMinutes} minutes from ${currentTime}`);
+        
+        if (remainingMinutes <= 0) break;
+        
+        if (remainingMinutes >= 90) {
+            // Long personal time block
+            schedule.push(createBlock('Personal/Hobby Time', currentTime, 90, 'Personal', 'Low'));
+            currentTime = addMinutes(currentTime, 90);
+        } else if (remainingMinutes >= 60) {
+            // Medium personal block
+            schedule.push(createBlock('Evening Relaxation', currentTime, 60, 'Personal', 'Low'));
             currentTime = addMinutes(currentTime, 60);
-            
-            const remainingGap = timeToMinutes(eveningRoutineStart) - timeToMinutes(currentTime);
-            if (remainingGap > 0) {
-                schedule.push(createBlock('Evening Wind-down', currentTime, remainingGap, 'Personal', 'Low'));
-            }
+        } else if (remainingMinutes >= 30) {
+            // Short personal block
+            schedule.push(createBlock('Wind-down Time', currentTime, remainingMinutes, 'Personal', 'Low'));
+            currentTime = addMinutes(currentTime, remainingMinutes);
         } else {
-            schedule.push(createBlock('Evening Relaxation', currentTime, timeGap, 'Personal', 'Low'));
+            // Less than 30 minutes - just prep time
+            schedule.push(createBlock('Pre-routine Prep', currentTime, remainingMinutes, 'Personal', 'Low'));
+            break;
         }
     }
 
-    // Evening routine
-    schedule.push(createBlock('Evening Routine & Prep', eveningRoutineStart, 45, 'Personal', 'Low'));
+    // Evening routine - 1 hour before bed
+    schedule.push(createBlock('Evening Routine & Tomorrow Prep', eveningRoutineStart, 60, 'Personal', 'Low'));
     
-    // Bedtime
-    schedule.push(createBlock(`Bedtime (${bedtimeData.sleepHours}h sleep target)`, 
-        bedtimeData.bedtime, 15, 'Personal', 'Low'));
+    // Bedtime block
+    schedule.push(createBlock(`Sleep (${bedtimeData.sleepHours}h target → wake ${bedtimeData.wakeTime})`, 
+        bedtimeData.bedtime, 30, 'Personal', 'Low'));
+
+    console.log(`✅ Complete day scheduled from wake to ${bedtimeData.bedtime}`);
 
     return schedule;
 }
