@@ -1,7 +1,12 @@
 async function detectWorkContext(today) {
-    if (!calendar) {
-        console.log('📅 No Google Calendar access - defaulting to home context');
-        return { location: 'home', type: 'default', workEvents: [] };
+    if (!googleAvailable || !calendar) {
+        console.log('📅 Google Calendar not available - defaulting to home context');
+        return { 
+            location: 'home', 
+            type: 'default', 
+            workEvents: [],
+            note: 'Add GOOGLE_SERVICE_ACCOUNT env var for calendar integration'
+        };
     }
 
     try {
@@ -86,27 +91,42 @@ function getCalendarType(calendarId) {
     if (calendarId.includes('a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09')) return 'routine';
     return 'unknown';
 }const { Client } = require('@notionhq/client');
-const { google } = require('googleapis');
 
 const notion = new Client({
     auth: process.env.NOTION_TOKEN
 });
 
-// Initialize Google Calendar
+// Initialize Google Calendar using your actual env vars
 let calendar = null;
-try {
-    if (process.env.GOOGLE_SERVICE_ACCOUNT) {
-        const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+let googleAvailable = false;
+
+if (process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
+    try {
+        const { google } = require('googleapis');
+        
+        const credentials = {
+            client_email: process.env.GOOGLE_CLIENT_EMAIL,
+            private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
+        };
+        
+        console.log('🔐 Setting up Google Calendar with:', process.env.GOOGLE_CLIENT_EMAIL);
+        
         const auth = new google.auth.JWT(
             credentials.client_email,
             null,
             credentials.private_key,
-            ['https://www.googleapis.com/auth/calendar.readonly']
+            ['https://www.googleapis.com/auth/calendar']
         );
+        
         calendar = google.calendar({ version: 'v3', auth });
+        googleAvailable = true;
+        console.log('📅 Google Calendar initialized successfully');
+    } catch (error) {
+        console.error('❌ Google Calendar setup failed:', error.message);
+        googleAvailable = false;
     }
-} catch (error) {
-    console.warn('⚠️ Google Calendar not configured:', error.message);
+} else {
+    console.log('⚠️ Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY environment variables');
 }
 
 const notion = new Client({
@@ -133,10 +153,22 @@ module.exports = async function handler(req, res) {
         const today = new Date().toISOString().split('T')[0];
         const action = req.query.action || 'display';
 
-        // If action is 'create', run the intelligent scheduler
+        // If action is 'create', run the full intelligent scheduler with sync
         if (action === 'create') {
-            console.log('🚀 Creating intelligent schedule based on morning log...');
+            console.log('🚀 Creating intelligent schedule with calendar sync...');
+            
+            // Step 1: Sync Google Calendar to Notion (pull latest events)
+            if (googleAvailable) {
+                await syncCalendarToNotion(today);
+            }
+            
+            // Step 2: Create intelligent time blocks
             await createIntelligentSchedule(today);
+            
+            // Step 3: Push new time blocks back to Google Calendar
+            if (googleAvailable) {
+                await pushNotionToCalendar(today);
+            }
         }
 
         // Get the current schedule and morning data
@@ -662,34 +694,158 @@ async function getMorningLogData(today) {
     }
 }
 
-function getFallbackSchedule() {
-    const now = new Date();
-    const currentHour = Math.max(6, now.getHours());
+// ──────────────────────────────────────────────────
+// 🔄 GOOGLE CALENDAR TWO-WAY SYNC FUNCTIONS
+// ──────────────────────────────────────────────────
+
+const CALENDAR_MAPPING = {
+    "Personal_Events": "shamilarae@gmail.com",
+    "Personal_Admin": "ba46fd78742e193e5c80d2a0ce5cf83751fe66c8b3ac6433c5ad2eb3947295c8@group.calendar.google.com",
+    "Personal_Appointment": "0nul0g0lvc35c0jto1u5k5o87s@group.calendar.google.com",
+    "Family_Events": "family13053487624784455294@group.calendar.google.com",
+    "Work_Travel": "oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com",
+    "Work_Admin": "25a2b77c6b27260126cdf6171f6acee428b838e43615a6bbef498d8138047014@group.calendar.google.com",
+    "Work_Deep": "09b6f8683cb5c58381f1ce55fb75d56f644187db041705dc85cec04d279cb7bb@group.calendar.google.com",
+    "Work_Meeting": "80a0f0cdb416ef47c50563665533e3b83b30a5a9ca513bed4899045c9828b577@group.calendar.google.com",
+    "Work_Routine": "a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09@group.calendar.google.com"
+};
+
+async function syncCalendarToNotion(today) {
+    if (!googleAvailable) return;
     
-    return [
-        {
-            time: `${currentHour.toString().padStart(2, '0')}:00`,
-            endTime: `${(currentHour + 1).toString().padStart(2, '0')}:00`,
-            title: 'Morning Routine',
-            type: 'personal',
-            energy: 'medium',
-            details: 'Default morning routine'
-        },
-        {
-            time: `${(currentHour + 1).toString().padStart(2, '0')}:00`,
-            endTime: `${(currentHour + 3).toString().padStart(2, '0')}:00`,
-            title: 'Focus Work Block',
-            type: 'deep-work',
-            energy: 'high',
-            details: 'Fallback work time'
-        },
-        {
-            time: `${(currentHour + 3).toString().padStart(2, '0')}:00`,
-            endTime: `${(currentHour + 4).toString().padStart(2, '0')}:00`,
-            title: 'Admin & Planning',
-            type: 'admin',
-            energy: 'medium',
-            details: 'Fallback admin time'
+    console.log('📥 Syncing Google Calendar events to Notion...');
+    
+    const startOfDay = new Date(`${today}T00:00:00-07:00`).toISOString();
+    const endOfDay = new Date(`${today}T23:59:59-07:00`).toISOString();
+    
+    let syncedCount = 0;
+    
+    for (const [contextType, calendarId] of Object.entries(CALENDAR_MAPPING)) {
+        try {
+            const response = await calendar.events.list({
+                calendarId: calendarId,
+                timeMin: startOfDay,
+                timeMax: endOfDay,
+                singleEvents: true,
+                orderBy: 'startTime'
+            });
+
+            const events = response.data.items || [];
+            console.log(`📊 Found ${events.length} events in ${contextType}`);
+
+            for (const event of events) {
+                const gcalId = event.id;
+                if (!gcalId) continue;
+
+                // Check if event already exists in Notion
+                const existing = await notion.databases.query({
+                    database_id: SCHEDULE_DB_ID,
+                    filter: {
+                        property: 'GCal ID',
+                        rich_text: { equals: gcalId }
+                    }
+                });
+
+                const [context, type] = contextType.split('_');
+                const properties = {
+                    Name: { title: [{ text: { content: event.summary || 'No Title' } }] },
+                    'Start Time': { date: { start: event.start?.dateTime || event.start?.date } },
+                    'End Time': { date: { start: event.end?.dateTime || event.end?.date } },
+                    'GCal ID': { rich_text: [{ text: { content: gcalId } }] },
+                    Context: { select: { name: context } },
+                    Type: { select: { name: type } }
+                };
+
+                if (existing.results.length > 0) {
+                    // Update existing
+                    await notion.pages.update({
+                        page_id: existing.results[0].id,
+                        properties
+                    });
+                } else {
+                    // Create new
+                    await notion.pages.create({
+                        parent: { database_id: SCHEDULE_DB_ID },
+                        properties
+                    });
+                }
+                syncedCount++;
+            }
+        } catch (error) {
+            console.error(`❌ Failed to sync ${contextType}:`, error.message);
         }
-    ];
+    }
+    
+    console.log(`✅ Synced ${syncedCount} calendar events to Notion`);
+}
+
+async function pushNotionToCalendar(today) {
+    if (!googleAvailable) return;
+    
+    console.log('📤 Pushing new Notion blocks to Google Calendar...');
+    
+    // Get today's time blocks (all of them - we'll push them all to calendar)
+    const timeBlocksToSync = await notion.databases.query({
+        database_id: TIME_BLOCKS_DB_ID,
+        filter: {
+            property: 'Start Time',
+            date: { equals: today }
+        }
+    });
+
+    let pushedCount = 0;
+
+    for (const block of timeBlocksToSync.results) {
+        try {
+            const props = block.properties;
+            const title = props.Title?.title?.[0]?.text?.content || 'Time Block';
+            const startTime = props['Start Time']?.date?.start;
+            const endTime = props['End Time']?.date?.start;
+            const blockType = props['Block Type']?.select?.name || 'Personal';
+
+            if (!startTime || !endTime) continue;
+
+            // Determine target calendar based on block type
+            let calendarId = CALENDAR_MAPPING.Personal_Events; // Default
+            
+            if (blockType.includes('Deep Work') || blockType.includes('Admin')) {
+                calendarId = CALENDAR_MAPPING.Work_Admin;
+            } else if (blockType.includes('Meeting')) {
+                calendarId = CALENDAR_MAPPING.Work_Meeting;
+            } else if (blockType.includes('Riley') || blockType.includes('Family')) {
+                calendarId = CALENDAR_MAPPING.Family_Events;
+            }
+
+            // Create event in Google Calendar
+            const event = {
+                summary: title,
+                start: { dateTime: startTime },
+                end: { dateTime: endTime },
+                description: `Created by Ash's AI Scheduler\nBlock Type: ${blockType}`
+            };
+
+            const createdEvent = await calendar.events.insert({
+                calendarId: calendarId,
+                resource: event
+            });
+
+            // Update Notion block with GCal ID
+            await notion.pages.update({
+                page_id: block.id,
+                properties: {
+                    // Add GCal ID property if your Time Blocks database has it
+                    // Remove this line if the property doesn't exist
+                    // 'GCal ID': { rich_text: [{ text: { content: createdEvent.data.id } }] }
+                }
+            });
+
+            pushedCount++;
+            console.log(`   ✅ ${title} → Google Calendar`);
+
+        } catch (error) {
+            console.error(`   ❌ Failed to push block:`, error.message);
+        }
+    }
+
+    console.log(`✅ Pushed ${pushedCount} new blocks to Google Calendar`);
 }
