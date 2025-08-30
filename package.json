@@ -2,15 +2,15 @@
   "name": "shamila-ai-scheduler",
   "version": "1.0.0",
   "type": "commonjs",
+  "private": true,
   "scripts": {
-    "build": "echo 'Static build complete'"
+    "build": "echo Static build complete"
   },
   "dependencies": {
-    "@notionhq/client": "^2.2.15"
+    "@notionhq/client": "^2.2.15",
     "googleapis": "^144.0.0"
   },
   "engines": {
     "node": "22.x"
   }
-
 }
