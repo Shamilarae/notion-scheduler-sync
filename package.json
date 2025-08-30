@@ -6,7 +6,8 @@
     "build": "echo 'Static build complete'"
   },
   "dependencies": {
-    "@notionhq/client": "^2.2.15"
+    "@notionhq/client": "^2.2.15",
+    "googleapis": "^144.0.0"
   },
   "engines": {
     "node": "22.x"
