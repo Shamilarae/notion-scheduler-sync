@@ -220,12 +220,77 @@ function generateIntelligentSchedule(morningData) {
         currentTime = addMinutes(currentTime, 90);
     }
 
-    // Family time - always prioritized
+    // Continue afternoon work until 5:30PM
+    const endOfWorkDay = '17:30'; // 5:30 PM
+    while (timeToMinutes(currentTime) < timeToMinutes(endOfWorkDay)) {
+        const remainingWorkTime = timeToMinutes(endOfWorkDay) - timeToMinutes(currentTime);
+        
+        if (remainingWorkTime >= 90) {
+            // Long work block
+            if (adjustedEnergy >= 6) {
+                schedule.push(createBlock('Afternoon Focus Block', currentTime, 90, 'Deep Work', 'Medium'));
+            } else {
+                schedule.push(createBlock('Afternoon Admin Work', currentTime, 90, 'Admin', 'Low'));
+            }
+            currentTime = addMinutes(currentTime, 90);
+        } else if (remainingWorkTime >= 45) {
+            // Medium work block
+            schedule.push(createBlock('End-of-Day Tasks', currentTime, remainingWorkTime, 'Admin', 'Low'));
+            currentTime = addMinutes(currentTime, remainingWorkTime);
+        } else if (remainingWorkTime > 0) {
+            // Short wrap-up
+            schedule.push(createBlock('Day Wrap-up', currentTime, remainingWorkTime, 'Admin', 'Low'));
+            currentTime = addMinutes(currentTime, remainingWorkTime);
+        }
+    }
+
+    // EVENING SCHEDULE - After 5:30PM
+    currentTime = '17:30'; // Ensure we start evening at 5:30
+
+    // Transition time
+    schedule.push(createBlock('Work to Home Transition', currentTime, 15, 'Break', 'Low'));
+    currentTime = addMinutes(currentTime, 15);
+
+    // Family time - sacred time
     schedule.push(createBlock('Riley Time - Family Priority', currentTime, 90, 'Riley Time', 'Medium'));
     currentTime = addMinutes(currentTime, 90);
 
-    // End of day wrap-up
-    schedule.push(createBlock('Day Review & Tomorrow Planning', currentTime, 30, 'Admin', 'Low'));
+    // Dinner time
+    schedule.push(createBlock('Dinner & Family Time', currentTime, 60, 'Personal', 'Low'));
+    currentTime = addMinutes(currentTime, 60);
+
+    // Evening personal time
+    schedule.push(createBlock('Personal/Hobby Time', currentTime, 60, 'Personal', 'Low'));
+    currentTime = addMinutes(currentTime, 60);
+
+    // Calculate bedtime based on tomorrow's wake time and sleep needs
+    const bedtimeData = calculateOptimalBedtime(morningData);
+    
+    // Evening routine leading to bedtime
+    const eveningRoutineStart = addMinutes(bedtimeData.bedtime, -60); // 1 hour before bed
+    
+    // Fill time between current time and evening routine
+    const timeGap = timeToMinutes(eveningRoutineStart) - timeToMinutes(currentTime);
+    if (timeGap > 0) {
+        if (timeGap >= 90) {
+            schedule.push(createBlock('Free Time/Relaxation', currentTime, 60, 'Personal', 'Low'));
+            currentTime = addMinutes(currentTime, 60);
+            
+            const remainingGap = timeToMinutes(eveningRoutineStart) - timeToMinutes(currentTime);
+            if (remainingGap > 0) {
+                schedule.push(createBlock('Evening Wind-down', currentTime, remainingGap, 'Personal', 'Low'));
+            }
+        } else {
+            schedule.push(createBlock('Evening Relaxation', currentTime, timeGap, 'Personal', 'Low'));
+        }
+    }
+
+    // Evening routine
+    schedule.push(createBlock('Evening Routine & Prep', eveningRoutineStart, 45, 'Personal', 'Low'));
+    
+    // Bedtime
+    schedule.push(createBlock(`Bedtime (${bedtimeData.sleepHours}h sleep target)`, 
+        bedtimeData.bedtime, 15, 'Personal', 'Low'));
 
     return schedule;
 }
@@ -250,6 +315,44 @@ function addMinutes(timeStr, minutes) {
     const newHours = Math.floor(totalMins / 60) % 24;
     const newMins = totalMins % 60;
     return `${newHours.toString().padStart(2, '0')}:${newMins.toString().padStart(2, '0')}`;
+}
+
+function timeToMinutes(timeStr) {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + minutes;
+}
+
+function calculateOptimalBedtime(morningData) {
+    // Get tomorrow's likely wake time (same as today or from user preference)
+    let tomorrowWakeTime = morningData.wakeTime ? parseWakeTime(morningData.wakeTime) : '06:30';
+    
+    // Determine optimal sleep duration based on sleep quality pattern
+    let targetSleepHours = 8; // Default
+    if (morningData.sleepQuality >= 8) {
+        targetSleepHours = 7.5; // High quality sleep, can get by with less
+    } else if (morningData.sleepQuality <= 5) {
+        targetSleepHours = 8.5; // Poor quality, need more time
+    }
+    
+    // Calculate bedtime by working backwards from wake time
+    const wakeTimeMinutes = timeToMinutes(tomorrowWakeTime);
+    const sleepDurationMinutes = targetSleepHours * 60;
+    let bedtimeMinutes = wakeTimeMinutes - sleepDurationMinutes;
+    
+    // Handle negative bedtime (previous day)
+    if (bedtimeMinutes < 0) {
+        bedtimeMinutes += 24 * 60; // Add 24 hours
+    }
+    
+    const bedtimeHours = Math.floor(bedtimeMinutes / 60);
+    const bedtimeMins = bedtimeMinutes % 60;
+    const bedtime = `${bedtimeHours.toString().padStart(2, '0')}:${bedtimeMins.toString().padStart(2, '0')}`;
+    
+    return {
+        bedtime,
+        sleepHours: targetSleepHours,
+        wakeTime: tomorrowWakeTime
+    };
 }
 
 function createBlock(title, startTime, durationMins, blockType, energyReq) {
