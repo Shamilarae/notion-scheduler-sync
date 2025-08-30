@@ -1,22 +1,12 @@
 const { Client } = require('@notionhq/client');
-const { google } = require('googleapis');
 
 const notion = new Client({
     auth: process.env.NOTION_TOKEN
 });
 
-// Your database IDs
+// Your actual database IDs
 const TIME_BLOCKS_DB_ID = '2569f86b4f8e80439779e754eca8a066';
 const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
-
-// Google Calendar Config
-const CALENDAR_CONFIG = {
-    "Personal": "shamilarae@gmail.com",
-    "Work_Admin": "25a2b77c6b27260126cdf6171f6acee428b838e43615a6bbef498d8138047014@group.calendar.google.com",
-    "Work_Deep": "09b6f8683cb5c58381f1ce55fb75d56f644187db041705dc85cec04d279cb7bb@group.calendar.google.com",
-    "Work_Meeting": "80a0f0cdb416ef47c50563665533e3b83b30a5a9ca513bed4899045c9828b577@group.calendar.google.com",
-    "Family": "family13053487624784455294@group.calendar.google.com"
-};
 
 module.exports = async function handler(req, res) {
     // CORS headers
@@ -29,23 +19,24 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        console.log('🧠 Intelligent Timeline API triggered');
+        console.log('🧠 Intelligent Timeline API triggered at:', new Date().toISOString());
         
         const today = new Date().toISOString().split('T')[0];
         const action = req.query.action || 'display';
 
         // If action is 'create', run the intelligent scheduler
         if (action === 'create') {
-            console.log('🚀 Creating intelligent schedule...');
+            console.log('🚀 Creating intelligent schedule based on morning log...');
             await createIntelligentSchedule(today);
         }
 
-        // Get the current schedule (either existing or newly created)
+        // Get the current schedule and morning data
         const schedule = await getCurrentSchedule(today);
         const morningData = await getMorningLogData(today);
 
         // Context detection
-        const currentHour = new Date().getHours();
+        const now = new Date();
+        const currentHour = now.getHours();
         const isWorkTime = currentHour >= 5 && currentHour <= 18;
 
         const response = {
@@ -54,14 +45,16 @@ module.exports = async function handler(req, res) {
             context: {
                 isWorkTime,
                 currentHour,
-                scheduleGenerated: schedule.length > 0
+                scheduleGenerated: schedule.length > 0,
+                hasIntelligentBlocks: schedule.some(s => s.title.includes('Deep Work') || s.title.includes('Creative'))
             },
-            lastUpdate: new Date().toLocaleTimeString('en-US', { 
+            wakeTime: morningData?.wakeTime ? parseWakeTime(morningData.wakeTime) : '06:30',
+            lastUpdate: now.toLocaleTimeString('en-US', { 
                 hour: '2-digit', 
                 minute: '2-digit',
                 timeZone: 'America/Los_Angeles'
             }),
-            date: new Date().toLocaleDateString('en-US', { 
+            date: now.toLocaleDateString('en-US', { 
                 weekday: 'long', 
                 year: 'numeric', 
                 month: 'long', 
@@ -76,15 +69,19 @@ module.exports = async function handler(req, res) {
         res.status(500).json({ 
             error: 'Failed to generate timeline',
             details: error.message,
-            fallbackSchedule: getFallbackSchedule()
+            schedule: getFallbackSchedule()
         });
     }
 };
 
+// ──────────────────────────────────────────────────
+// 🧠 INTELLIGENT SCHEDULING LOGIC
+// ──────────────────────────────────────────────────
+
 async function createIntelligentSchedule(today) {
-    console.log('📖 Analyzing morning log...');
+    console.log('📖 Analyzing morning log data...');
     
-    // Get morning log data
+    // Get today's morning log
     const morningLogResponse = await notion.databases.query({
         database_id: DAILY_LOGS_DB_ID,
         filter: {
@@ -96,29 +93,29 @@ async function createIntelligentSchedule(today) {
     });
 
     if (morningLogResponse.results.length === 0) {
-        throw new Error('No morning log found. Complete your morning ritual first, princess.');
+        throw new Error('No morning log found for today. Complete your morning ritual first, princess.');
     }
 
     const log = morningLogResponse.results[0];
     const morningData = extractMorningData(log);
     
-    console.log(`🧠 Analysis: Energy ${morningData.energy}/10, Focus: ${morningData.focusCapacity}`);
+    console.log(`🧠 Analysis Complete:`);
+    console.log(`   Energy: ${morningData.energy}/10`);
+    console.log(`   Focus: ${morningData.focusCapacity}`);
+    console.log(`   Social Battery: ${morningData.socialBattery}`);
+    console.log(`   Sleep Quality: ${morningData.sleepQuality}/10`);
 
-    // Generate intelligent schedule based on morning data
+    // Generate intelligent schedule
     const schedule = generateIntelligentSchedule(morningData);
-    
-    console.log(`📝 Creating ${schedule.length} time blocks...`);
+    console.log(`📝 Generated ${schedule.length} intelligent time blocks`);
 
-    // Clear existing blocks for today first
+    // Clear existing blocks for today
     await clearExistingBlocks(today);
 
     // Create new blocks in Notion
     const createdBlocks = await createNotionBlocks(schedule, today);
+    console.log(`✅ Created ${createdBlocks.length} time blocks in Notion`);
     
-    // Sync to Google Calendar if configured
-    await syncToGoogleCalendar(createdBlocks, today);
-    
-    console.log('✅ Intelligent schedule created successfully');
     return createdBlocks;
 }
 
@@ -140,9 +137,11 @@ function extractMorningData(log) {
 function generateIntelligentSchedule(morningData) {
     const { energy, focusCapacity, socialBattery, sleepQuality } = morningData;
     
-    // Sleep quality adjustment
+    // Adjust energy based on sleep quality
     const sleepFactor = sleepQuality < 6 ? 0.7 : sleepQuality > 8 ? 1.2 : 1.0;
     const adjustedEnergy = Math.min(10, energy * sleepFactor);
+
+    console.log(`🎯 Adjusted energy: ${adjustedEnergy.toFixed(1)}/10 (sleep factor: ${sleepFactor})`);
 
     let schedule = [];
     let currentTime = parseWakeTime(morningData.wakeTime);
@@ -151,79 +150,98 @@ function generateIntelligentSchedule(morningData) {
     schedule.push(createBlock('Morning Routine', currentTime, 60, 'Personal', 'Low'));
     currentTime = addMinutes(currentTime, 60);
 
-    // Morning planning
-    schedule.push(createBlock('Morning Planning & Review', currentTime, 30, 'Admin', 'Medium'));
+    // Morning planning and log review
+    schedule.push(createBlock('Morning Planning & Log Review', currentTime, 30, 'Admin', 'Medium'));
     currentTime = addMinutes(currentTime, 30);
 
-    // Main work blocks based on energy and focus
+    // INTELLIGENT WORK BLOCKS based on energy and focus
     if (adjustedEnergy >= 8 && focusCapacity === 'Sharp') {
-        // Peak performance mode
-        schedule.push(createBlock('Deep Work - Core Project', currentTime, 150, 'Deep Work', 'High'));
+        // PEAK PERFORMANCE MODE
+        console.log('🔥 Peak performance mode activated');
+        schedule.push(createBlock('Deep Work - Core Project Focus', currentTime, 150, 'Deep Work', 'High'));
         currentTime = addMinutes(currentTime, 150);
         
-        schedule.push(createBlock('Active Break', currentTime, 15, 'Break', 'Low'));
+        schedule.push(createBlock('Active Movement Break', currentTime, 15, 'Break', 'Low'));
         currentTime = addMinutes(currentTime, 15);
         
-        schedule.push(createBlock('Creative Development', currentTime, 90, 'Creative', 'Medium'));
+        schedule.push(createBlock('Creative Development Work', currentTime, 90, 'Creative', 'Medium'));
         currentTime = addMinutes(currentTime, 90);
         
     } else if (adjustedEnergy >= 6 && focusCapacity !== 'Scattered') {
-        // Standard productivity mode
+        // STANDARD PRODUCTIVITY MODE
+        console.log('⚡ Standard productivity mode');
         schedule.push(createBlock('Focused Work Block', currentTime, 90, 'Deep Work', 'High'));
         currentTime = addMinutes(currentTime, 90);
         
-        schedule.push(createBlock('Movement Break', currentTime, 15, 'Break', 'Low'));
+        schedule.push(createBlock('Movement & Refresh Break', currentTime, 15, 'Break', 'Low'));
         currentTime = addMinutes(currentTime, 15);
         
         schedule.push(createBlock('Admin & Communications', currentTime, 60, 'Admin', 'Medium'));
         currentTime = addMinutes(currentTime, 60);
         
-        schedule.push(createBlock('Creative/Strategy Work', currentTime, 90, 'Creative', 'Medium'));
-        currentTime = addMinutes(currentTime, 90);
+        schedule.push(createBlock('Creative Strategy Work', currentTime, 75, 'Creative', 'Medium'));
+        currentTime = addMinutes(currentTime, 75);
         
     } else {
-        // Low energy/scattered focus mode
-        schedule.push(createBlock('Light Admin Work', currentTime, 60, 'Admin', 'Low'));
+        // LOW ENERGY / RECOVERY MODE
+        console.log('🛡️ Recovery mode - gentle schedule');
+        schedule.push(createBlock('Light Admin & Organization', currentTime, 60, 'Admin', 'Low'));
         currentTime = addMinutes(currentTime, 60);
         
-        schedule.push(createBlock('Gentle Break', currentTime, 20, 'Break', 'Low'));
+        schedule.push(createBlock('Gentle Rest Break', currentTime, 20, 'Break', 'Low'));
         currentTime = addMinutes(currentTime, 20);
         
-        schedule.push(createBlock('Review & Planning', currentTime, 45, 'Admin', 'Low'));
+        schedule.push(createBlock('Review & Light Planning', currentTime, 45, 'Admin', 'Low'));
         currentTime = addMinutes(currentTime, 45);
+        
+        schedule.push(createBlock('Easy Creative Tasks', currentTime, 60, 'Creative', 'Low'));
+        currentTime = addMinutes(currentTime, 60);
     }
 
-    // Lunch break
-    schedule.push(createBlock('Lunch & Recharge', currentTime, 60, 'Break', 'Low'));
+    // Lunch break - always important
+    schedule.push(createBlock('Lunch & Recharge Time', currentTime, 60, 'Break', 'Low'));
     currentTime = addMinutes(currentTime, 60);
 
-    // Afternoon blocks
-    if (socialBattery !== 'Drained') {
-        schedule.push(createBlock('Collaboration/Meetings', currentTime, 90, 'Meeting Prep', 'Medium'));
+    // Afternoon blocks - adjusted for social battery
+    if (socialBattery === 'Drained') {
+        console.log('🔋 Social battery drained - solo work mode');
+        schedule.push(createBlock('Solo Deep Work Session', currentTime, 90, 'Deep Work', 'Medium'));
         currentTime = addMinutes(currentTime, 90);
+    } else if (socialBattery === 'Half-Drained') {
+        console.log('⚡ Half social battery - light collaboration');
+        schedule.push(createBlock('Light Collaboration Work', currentTime, 60, 'Meeting Prep', 'Medium'));
+        currentTime = addMinutes(currentTime, 60);
+        
+        schedule.push(createBlock('Solo Wrap-up Tasks', currentTime, 30, 'Admin', 'Low'));
+        currentTime = addMinutes(currentTime, 30);
     } else {
-        schedule.push(createBlock('Solo Deep Work', currentTime, 90, 'Deep Work', 'Medium'));
+        console.log('🤝 Full social battery - meetings welcome');
+        schedule.push(createBlock('Meetings & Collaboration', currentTime, 90, 'Meeting Prep', 'Medium'));
         currentTime = addMinutes(currentTime, 90);
     }
 
-    // Riley time
-    schedule.push(createBlock('Riley Time', currentTime, 90, 'Riley Time', 'Medium'));
+    // Family time - always prioritized
+    schedule.push(createBlock('Riley Time - Family Priority', currentTime, 90, 'Riley Time', 'Medium'));
     currentTime = addMinutes(currentTime, 90);
 
-    // End of day
-    schedule.push(createBlock('Day Review & Tomorrow Prep', currentTime, 30, 'Admin', 'Low'));
+    // End of day wrap-up
+    schedule.push(createBlock('Day Review & Tomorrow Planning', currentTime, 30, 'Admin', 'Low'));
 
     return schedule;
 }
 
 function parseWakeTime(wakeTimeStr) {
-    if (!wakeTimeStr) return '06:30';
+    if (!wakeTimeStr) return '06:30'; // Default wake time
     
     const wake = new Date(wakeTimeStr);
     // Convert UTC to Pacific Time - subtract 7 hours for PDT
     const pacificHours = wake.getUTCHours() - 7;
     const pacificMinutes = wake.getUTCMinutes();
-    return `${pacificHours.toString().padStart(2, '0')}:${pacificMinutes.toString().padStart(2, '0')}`;
+    
+    // Handle negative hours (previous day)
+    const adjustedHours = pacificHours < 0 ? pacificHours + 24 : pacificHours;
+    
+    return `${adjustedHours.toString().padStart(2, '0')}:${pacificMinutes.toString().padStart(2, '0')}`;
 }
 
 function addMinutes(timeStr, minutes) {
@@ -256,6 +274,7 @@ async function clearExistingBlocks(today) {
             }
         });
 
+        // Archive existing blocks instead of deleting
         for (const block of existing.results) {
             await notion.pages.update({
                 page_id: block.id,
@@ -263,7 +282,9 @@ async function clearExistingBlocks(today) {
             });
         }
         
-        console.log(`🗑️ Cleared ${existing.results.length} existing blocks`);
+        if (existing.results.length > 0) {
+            console.log(`🗑️ Archived ${existing.results.length} existing blocks`);
+        }
     } catch (error) {
         console.warn('⚠️ Could not clear existing blocks:', error.message);
     }
@@ -274,7 +295,8 @@ async function createNotionBlocks(schedule, today) {
 
     for (const block of schedule) {
         try {
-            const startDateTime = `${today}T${block.startTime}:00.000-07:00`; // PDT timezone
+            // Create proper datetime strings in Pacific timezone
+            const startDateTime = `${today}T${block.startTime}:00.000-07:00`;
             const endDateTime = `${today}T${block.endTime}:00.000-07:00`;
 
             const response = await notion.pages.create({
@@ -289,20 +311,25 @@ async function createNotionBlocks(schedule, today) {
                 }
             });
 
-            createdBlocks.push({ notionId: response.id, ...block });
+            createdBlocks.push({ 
+                notionId: response.id, 
+                ...block,
+                created: true 
+            });
+            
+            console.log(`   ✅ ${block.title} (${block.startTime}-${block.endTime})`);
+            
         } catch (error) {
-            console.error(`❌ Failed to create block: ${block.title}`, error.message);
+            console.error(`   ❌ Failed: ${block.title} - ${error.message}`);
         }
     }
 
     return createdBlocks;
 }
 
-async function syncToGoogleCalendar(blocks, today) {
-    // Skip Google Calendar sync in Vercel for now - requires service account setup
-    console.log('📅 Google Calendar sync skipped (configure service account for full sync)');
-    return;
-}
+// ──────────────────────────────────────────────────
+// 📊 DATA RETRIEVAL FUNCTIONS
+// ──────────────────────────────────────────────────
 
 async function getCurrentSchedule(today) {
     try {
@@ -315,29 +342,35 @@ async function getCurrentSchedule(today) {
             sorts: [{ property: 'Start Time', direction: 'ascending' }]
         });
 
-        return timeBlocks.results.map(block => {
+        const schedule = timeBlocks.results.map(block => {
             const startTime = block.properties['Start Time']?.date?.start;
             const endTime = block.properties['End Time']?.date?.start;
             const title = block.properties.Title?.title[0]?.text?.content || 'Untitled Block';
             const blockType = block.properties['Block Type']?.select?.name || 'personal';
             const energy = block.properties['Energy Requirements']?.select?.name || 'medium';
 
-            // Convert UTC to Pacific Time
-            const start = startTime ? new Date(startTime) : null;
+            if (!startTime) return null;
+
+            // Convert UTC to Pacific Time for display
+            const start = new Date(startTime);
             const end = endTime ? new Date(endTime) : null;
             
-            const startPacific = start ? new Date(start.getTime() - (7 * 60 * 60 * 1000)) : null;
+            // Subtract 7 hours for PDT (or 8 for PST - adjust as needed)
+            const startPacific = new Date(start.getTime() - (7 * 60 * 60 * 1000));
             const endPacific = end ? new Date(end.getTime() - (7 * 60 * 60 * 1000)) : null;
 
             return {
-                time: startPacific ? `${startPacific.getUTCHours().toString().padStart(2, '0')}:${startPacific.getUTCMinutes().toString().padStart(2, '0')}` : '',
+                time: `${startPacific.getUTCHours().toString().padStart(2, '0')}:${startPacific.getUTCMinutes().toString().padStart(2, '0')}`,
                 endTime: endPacific ? `${endPacific.getUTCHours().toString().padStart(2, '0')}:${endPacific.getUTCMinutes().toString().padStart(2, '0')}` : '',
                 title,
                 type: blockType.toLowerCase().replace(/\s+/g, '-'),
                 energy: energy.toLowerCase(),
-                details: `${energy} energy • ${blockType}`
+                details: `${energy} energy • ${blockType}`,
+                project: block.properties['Projects Master']?.relation?.[0]?.id || null
             };
-        }).filter(block => block.time);
+        }).filter(block => block !== null);
+
+        return schedule;
 
     } catch (error) {
         console.error('❌ Failed to get current schedule:', error.message);
@@ -353,10 +386,14 @@ async function getMorningLogData(today) {
                 property: 'Date',
                 date: { equals: today }
             },
+            sorts: [{ timestamp: 'created_time', direction: 'descending' }],
             page_size: 1
         });
 
-        if (response.results.length === 0) return null;
+        if (response.results.length === 0) {
+            console.log('📝 No morning log found for today');
+            return null;
+        }
 
         return extractMorningData(response.results[0]);
     } catch (error) {
@@ -366,33 +403,33 @@ async function getMorningLogData(today) {
 }
 
 function getFallbackSchedule() {
-    const currentTime = new Date();
-    const baseHour = Math.max(6, currentTime.getHours());
+    const now = new Date();
+    const currentHour = Math.max(6, now.getHours());
     
     return [
         {
-            time: `${baseHour.toString().padStart(2, '0')}:00`,
-            endTime: `${(baseHour + 1).toString().padStart(2, '0')}:00`,
+            time: `${currentHour.toString().padStart(2, '0')}:00`,
+            endTime: `${(currentHour + 1).toString().padStart(2, '0')}:00`,
             title: 'Morning Routine',
             type: 'personal',
             energy: 'medium',
-            details: 'Start your day'
+            details: 'Default morning routine'
         },
         {
-            time: `${(baseHour + 1).toString().padStart(2, '0')}:00`,
-            endTime: `${(baseHour + 3).toString().padStart(2, '0')}:00`,
+            time: `${(currentHour + 1).toString().padStart(2, '0')}:00`,
+            endTime: `${(currentHour + 3).toString().padStart(2, '0')}:00`,
             title: 'Focus Work Block',
             type: 'deep-work',
             energy: 'high',
-            details: 'Core productive time'
+            details: 'Fallback work time'
         },
         {
-            time: `${(baseHour + 3).toString().padStart(2, '0')}:00`,
-            endTime: `${(baseHour + 4).toString().padStart(2, '0')}:00`,
+            time: `${(currentHour + 3).toString().padStart(2, '0')}:00`,
+            endTime: `${(currentHour + 4).toString().padStart(2, '0')}:00`,
             title: 'Admin & Planning',
             type: 'admin',
             energy: 'medium',
-            details: 'Organization time'
+            details: 'Fallback admin time'
         }
     ];
 }
