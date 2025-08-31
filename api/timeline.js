@@ -107,6 +107,10 @@ function createCompleteSchedule(morningData) {
     
     console.log(`Starting schedule at wake time: ${startTime}`);
     
+    // Calculate intelligent bedtime first
+    const bedtimeData = calculateOptimalBedtime(morningData);
+    console.log(`Calculated optimal bedtime: ${bedtimeData.bedtime} (${bedtimeData.targetSleep}h sleep needed)`);
+    
     // Create ALL blocks for the entire day
     const blocks = [
         // Morning
@@ -119,17 +123,13 @@ function createCompleteSchedule(morningData) {
         // Lunch
         { title: 'Lunch Break', start: '12:00', duration: 60, type: 'Break', energy: 'Low' },
         
-        // Afternoon work - EVERY 90 MINUTES UNTIL 5:30
-        { title: 'Afternoon Block 1', start: '13:00', duration: 90, type: 'Deep Work', energy: 'Medium' },
-        { title: 'Afternoon Block 2', start: '14:30', duration: 90, type: 'Admin', energy: 'Medium' },
-        { title: 'End of Day Work', start: '16:00', duration: 90, type: 'Admin', energy: 'Low' },
+        // Afternoon work - PROPERLY FILL UNTIL 5:30 PM
+        { title: 'Afternoon Deep Work', start: '13:00', duration: 90, type: 'Deep Work', energy: 'Medium' },
+        { title: 'Afternoon Admin', start: '14:30', duration: 90, type: 'Admin', energy: 'Medium' },
+        { title: 'End-of-Day Work', start: '16:00', duration: 90, type: 'Admin', energy: 'Low' },
         
-        // Evening
-        { title: 'Work Transition', start: '17:30', duration: 15, type: 'Break', energy: 'Low' },
-        { title: 'Personal Time', start: '17:45', duration: 90, type: 'Personal', energy: 'Low' },
-        { title: 'Dinner', start: '19:15', duration: 60, type: 'Personal', energy: 'Low' },
-        { title: 'Evening Routine', start: '21:00', duration: 60, type: 'Personal', energy: 'Low' },
-        { title: 'Sleep', start: '22:00', duration: 30, type: 'Personal', energy: 'Low' }
+        // Evening blocks until calculated bedtime
+        ...createEveningBlocks(bedtimeData)
     ];
     
     // Convert to proper format
@@ -146,6 +146,142 @@ function createCompleteSchedule(morningData) {
     });
     
     return schedule;
+}
+
+function calculateOptimalBedtime(morningData) {
+    // Get tomorrow's wake time (assume same as today)
+    const tomorrowWakeTime = morningData.wakeTime ? parseWakeTime(morningData.wakeTime) : '06:30';
+    
+    // Determine sleep needs based on today's energy patterns and sleep quality
+    let targetSleepHours = 8; // Base recommendation
+    
+    // Adjust based on sleep quality from last night
+    if (morningData.sleepQuality <= 4) {
+        targetSleepHours = 9; // Need recovery sleep
+    } else if (morningData.sleepQuality >= 8) {
+        targetSleepHours = 7.5; // High efficiency sleep
+    }
+    
+    // Adjust based on energy levels (if drained, need more recovery)
+    if (morningData.energy <= 4) {
+        targetSleepHours += 0.5; // Extra recovery time
+    } else if (morningData.energy >= 8) {
+        targetSleepHours -= 0.25; // Can get by with slightly less
+    }
+    
+    // Calculate bedtime by working backwards from wake time
+    const wakeMinutes = timeToMinutes(tomorrowWakeTime);
+    const sleepDurationMinutes = targetSleepHours * 60;
+    let bedtimeMinutes = wakeMinutes - sleepDurationMinutes;
+    
+    // Handle crossing midnight
+    if (bedtimeMinutes < 0) {
+        bedtimeMinutes += 24 * 60;
+    }
+    
+    const bedtimeHours = Math.floor(bedtimeMinutes / 60);
+    const bedtimeMins = bedtimeMinutes % 60;
+    const bedtime = `${bedtimeHours.toString().padStart(2, '0')}:${bedtimeMins.toString().padStart(2, '0')}`;
+    
+    return {
+        bedtime,
+        targetSleep: targetSleepHours,
+        wakeTime: tomorrowWakeTime,
+        reasoning: `Based on sleep quality ${morningData.sleepQuality}/10 and energy ${morningData.energy}/10`
+    };
+}
+
+function createEveningBlocks(bedtimeData) {
+    const blocks = [];
+    let currentTime = '17:30'; // End of work day
+    
+    // Work transition
+    blocks.push({ 
+        title: 'Work to Personal Transition', 
+        start: currentTime, 
+        duration: 15, 
+        type: 'Break', 
+        energy: 'Low' 
+    });
+    currentTime = addMinutes(currentTime, 15);
+    
+    // Dinner time
+    blocks.push({ 
+        title: 'Dinner', 
+        start: currentTime, 
+        duration: 60, 
+        type: 'Personal', 
+        energy: 'Low' 
+    });
+    currentTime = addMinutes(currentTime, 60);
+    
+    // Calculate how much time until bedtime routine (1 hour before bed)
+    const bedtimeRoutineStart = addMinutes(bedtimeData.bedtime, -60);
+    const bedtimeRoutineMinutes = timeToMinutes(bedtimeRoutineStart);
+    const currentMinutes = timeToMinutes(currentTime);
+    const personalTimeMinutes = bedtimeRoutineMinutes - currentMinutes;
+    
+    console.log(`Personal time available: ${personalTimeMinutes} minutes (${currentTime} to ${bedtimeRoutineStart})`);
+    
+    // Fill personal time until bedtime routine
+    if (personalTimeMinutes > 0) {
+        let remainingPersonalTime = personalTimeMinutes;
+        
+        while (remainingPersonalTime > 0) {
+            let blockDuration;
+            let blockTitle;
+            
+            if (remainingPersonalTime >= 120) {
+                blockDuration = 120;
+                blockTitle = 'Personal Projects/Hobbies';
+            } else if (remainingPersonalTime >= 90) {
+                blockDuration = 90;
+                blockTitle = 'Evening Personal Time';
+            } else if (remainingPersonalTime >= 60) {
+                blockDuration = 60;
+                blockTitle = 'Relaxation Time';
+            } else {
+                blockDuration = remainingPersonalTime;
+                blockTitle = 'Wind-down Time';
+            }
+            
+            blocks.push({
+                title: blockTitle,
+                start: currentTime,
+                duration: blockDuration,
+                type: 'Personal',
+                energy: 'Low'
+            });
+            
+            currentTime = addMinutes(currentTime, blockDuration);
+            remainingPersonalTime -= blockDuration;
+        }
+    }
+    
+    // Evening routine (1 hour before bed)
+    blocks.push({
+        title: 'Evening Routine & Tomorrow Prep',
+        start: bedtimeRoutineStart,
+        duration: 60,
+        type: 'Personal',
+        energy: 'Low'
+    });
+    
+    // Sleep time with reasoning
+    blocks.push({
+        title: `Sleep (${bedtimeData.targetSleep}h target - ${bedtimeData.reasoning})`,
+        start: bedtimeData.bedtime,
+        duration: 30,
+        type: 'Personal',
+        energy: 'Low'
+    });
+    
+    return blocks;
+}
+
+function timeToMinutes(timeStr) {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + minutes;
 }
 
 function createWorkBlocks(morningData, startTime) {
