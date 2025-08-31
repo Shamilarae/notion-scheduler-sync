@@ -96,37 +96,42 @@ const notion = new Client({
     auth: process.env.NOTION_TOKEN
 });
 
-// Initialize Google Calendar using your actual env vars
+// Initialize Google Calendar - safely import googleapis only when needed
 let calendar = null;
 let googleAvailable = false;
 
-if (process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
-    try {
-        const { google } = require('googleapis');
-        
-        const credentials = {
-            client_email: process.env.GOOGLE_CLIENT_EMAIL,
-            private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
-        };
-        
-        console.log('🔐 Setting up Google Calendar with:', process.env.GOOGLE_CLIENT_EMAIL);
-        
-        const auth = new google.auth.JWT(
-            credentials.client_email,
-            null,
-            credentials.private_key,
-            ['https://www.googleapis.com/auth/calendar']
-        );
-        
-        calendar = google.calendar({ version: 'v3', auth });
-        googleAvailable = true;
-        console.log('📅 Google Calendar initialized successfully');
-    } catch (error) {
-        console.error('❌ Google Calendar setup failed:', error.message);
-        googleAvailable = false;
+async function initializeGoogleCalendar() {
+    if (process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
+        try {
+            const { google } = require('googleapis');
+            
+            const credentials = {
+                client_email: process.env.GOOGLE_CLIENT_EMAIL,
+                private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
+            };
+            
+            console.log('🔐 Setting up Google Calendar with:', process.env.GOOGLE_CLIENT_EMAIL);
+            
+            const auth = new google.auth.JWT(
+                credentials.client_email,
+                null,
+                credentials.private_key,
+                ['https://www.googleapis.com/auth/calendar']
+            );
+            
+            calendar = google.calendar({ version: 'v3', auth });
+            googleAvailable = true;
+            console.log('📅 Google Calendar initialized successfully');
+            return true;
+        } catch (error) {
+            console.error('❌ Google Calendar setup failed:', error.message);
+            googleAvailable = false;
+            return false;
+        }
+    } else {
+        console.log('⚠️ Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY environment variables');
+        return false;
     }
-} else {
-    console.log('⚠️ Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY environment variables');
 }
 
 const notion = new Client({
@@ -156,6 +161,9 @@ module.exports = async function handler(req, res) {
         // If action is 'create', run the full intelligent scheduler with sync
         if (action === 'create') {
             console.log('🚀 Creating intelligent schedule with calendar sync...');
+            
+            // Initialize Google Calendar first
+            await initializeGoogleCalendar();
             
             // Step 1: Sync Google Calendar to Notion (pull latest events)
             if (googleAvailable) {
