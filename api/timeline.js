@@ -75,19 +75,20 @@ module.exports = async function handler(req, res) {
         const action = req.query.action || 'display';
 
         if (action === 'create') {
-            console.log('Creating intelligent schedule with calendar sync...');
+            console.log('Creating intelligent schedule (Calendar sync temporarily disabled)...');
             
-            await initializeGoogleCalendar();
+            // TEMPORARILY DISABLE CALENDAR SYNC to fix core scheduling
+            // await initializeGoogleCalendar();
+            // if (googleAvailable) {
+            //     await syncCalendarToNotion(today);
+            // }
             
-            if (googleAvailable) {
-                await syncCalendarToNotion(today);
-            }
-            
+            // Focus on just creating the intelligent schedule
             await createIntelligentSchedule(today);
             
-            if (googleAvailable) {
-                await pushNotionToCalendar(today);
-            }
+            // if (googleAvailable) {
+            //     await pushNotionToCalendar(today);
+            // }
         }
 
         const schedule = await getCurrentSchedule(today);
@@ -245,33 +246,58 @@ function generateIntelligentSchedule(morningData, context) {
     schedule.push(createBlock('Lunch & Recharge Time', currentTime, 60, 'Break', 'Low'));
     currentTime = addMinutes(currentTime, 60);
 
-    // Afternoon work until 5:30
-    console.log(`Current time before afternoon blocks: ${currentTime}`);
+    // SIMPLE AFTERNOON SCHEDULE - No complex loops
+    console.log(`=== SIMPLE AFTERNOON SCHEDULE ===`);
+    console.log(`Starting afternoon at: ${currentTime}`);
     
-    while (currentTime < '17:30') {
-        const currentMinutes = timeToMinutes(currentTime);
-        const endOfDayMinutes = timeToMinutes('17:30');
-        const remainingMinutes = endOfDayMinutes - currentMinutes;
+    // Manually create afternoon blocks until 5:30 PM
+    const afternoonBlocks = [];
+    
+    // Calculate how much time we need to fill until 5:30 PM
+    const currentMinutes = timeToMinutes(currentTime);
+    const endWorkMinutes = timeToMinutes('17:30'); // 5:30 PM
+    const totalAfternoonMinutes = endWorkMinutes - currentMinutes;
+    
+    console.log(`Need to fill ${totalAfternoonMinutes} minutes until 5:30 PM`);
+    
+    if (totalAfternoonMinutes > 0) {
+        let remainingTime = totalAfternoonMinutes;
+        let blockStartTime = currentTime;
         
-        if (remainingMinutes <= 0) break;
-        
-        if (remainingMinutes >= 90) {
-            if (adjustedEnergy >= 6) {
-                schedule.push(createBlock('Afternoon Deep Work', currentTime, 90, 'Deep Work', 'Medium'));
+        // Create blocks to fill the time
+        while (remainingTime > 0) {
+            let blockDuration;
+            let blockTitle;
+            
+            if (remainingTime >= 120) {
+                blockDuration = 120; // 2 hours
+                blockTitle = 'Afternoon Deep Work Session';
+            } else if (remainingTime >= 90) {
+                blockDuration = 90; // 1.5 hours
+                blockTitle = 'Afternoon Focus Block';
+            } else if (remainingTime >= 60) {
+                blockDuration = 60; // 1 hour
+                blockTitle = 'End-of-Day Work';
             } else {
-                schedule.push(createBlock('Afternoon Admin Block', currentTime, 90, 'Admin', 'Medium'));
+                blockDuration = remainingTime; // Whatever's left
+                blockTitle = 'Final Tasks';
             }
-            currentTime = addMinutes(currentTime, 90);
-        } else if (remainingMinutes >= 60) {
-            schedule.push(createBlock('End-of-Day Work', currentTime, 60, 'Admin', 'Medium'));
-            currentTime = addMinutes(currentTime, 60);
-        } else if (remainingMinutes >= 30) {
-            schedule.push(createBlock('Day Wrap-up Tasks', currentTime, remainingMinutes, 'Admin', 'Low'));
-            currentTime = addMinutes(currentTime, remainingMinutes);
-        } else {
-            schedule.push(createBlock('Final Tasks', currentTime, remainingMinutes, 'Admin', 'Low'));
-            break;
+            
+            const block = createBlock(blockTitle, blockStartTime, blockDuration, 'Deep Work', 'Medium');
+            afternoonBlocks.push(block);
+            schedule.push(block);
+            
+            console.log(`Created: ${block.title} from ${block.startTime} to ${block.endTime} (${blockDuration} min)`);
+            
+            blockStartTime = addMinutes(blockStartTime, blockDuration);
+            remainingTime -= blockDuration;
         }
+        
+        console.log(`Created ${afternoonBlocks.length} afternoon blocks`);
+        currentTime = '17:30'; // Set to exactly 5:30 PM
+    } else {
+        console.log('No afternoon time to fill - already at or past 5:30 PM');
+        currentTime = '17:30';
     }
 
     // Evening schedule after 5:30
@@ -406,13 +432,25 @@ function createBlock(title, startTime, durationMins, blockType, energyReq) {
 
 async function clearExistingBlocks(today) {
     try {
+        console.log('Clearing existing blocks to prevent duplicates...');
+        
         const existing = await notionClient.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
-                property: 'Start Time',
-                date: { equals: today }
+                and: [
+                    {
+                        property: 'Start Time',
+                        date: { equals: today }
+                    },
+                    {
+                        property: 'archived',
+                        checkbox: { equals: false }
+                    }
+                ]
             }
         });
+
+        console.log(`Found ${existing.results.length} existing blocks to clear`);
 
         for (const block of existing.results) {
             await notionClient.pages.update({
@@ -422,10 +460,11 @@ async function clearExistingBlocks(today) {
         }
         
         if (existing.results.length > 0) {
-            console.log(`Archived ${existing.results.length} existing blocks`);
+            console.log(`Successfully archived ${existing.results.length} existing blocks`);
         }
     } catch (error) {
         console.warn('Could not clear existing blocks:', error.message);
+        // Don't throw - continue with creation even if clearing fails
     }
 }
 
