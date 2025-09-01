@@ -7,6 +7,19 @@ const notion = new Client({
 const TIME_BLOCKS_DB_ID = '2569f86b4f8e80439779e754eca8a066';
 const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
 
+// Google Calendar integration using service account
+const { google } = require('googleapis');
+
+const auth = new google.auth.GoogleAuth({
+    credentials: {
+        client_email: process.env.GOOGLE_CLIENT_EMAIL,
+        private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    },
+    scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+});
+
+const calendar = google.calendar({ version: 'v3', auth });
+
 module.exports = async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -21,8 +34,8 @@ module.exports = async function handler(req, res) {
         const action = req.query.action || 'display';
 
         if (action === 'create') {
-            console.log('Creating schedule...');
-            await createTestSchedule(today);
+            console.log('Creating intelligent schedule with Google Calendar integration...');
+            await createIntelligentSchedule(today);
         }
 
         const schedule = await getCurrentSchedule(today);
@@ -39,7 +52,7 @@ module.exports = async function handler(req, res) {
             lastUpdate: now.toLocaleTimeString('en-US', { 
                 hour: '2-digit', 
                 minute: '2-digit',
-                timeZone: 'America/Los_Angeles'
+                timeZone: 'America/Vancouver'
             }),
             date: now.toLocaleDateString('en-US', { 
                 weekday: 'long', 
@@ -64,21 +77,26 @@ async function getCurrentSchedule(today) {
     try {
         console.log(`Getting schedule for ${today}...`);
         
-        // Query all blocks for today - no status filter first
+        // Get blocks that start today OR tomorrow (to catch evening blocks that cross midnight)
+        const todayStart = `${today}T00:00:00.000Z`;
+        const tomorrowDate = new Date(today + 'T00:00:00.000Z');
+        tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+        const tomorrowEnd = tomorrowDate.toISOString().split('T')[0] + 'T23:59:59.999Z';
+        
         const timeBlocks = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
                 property: 'Start Time',
                 date: {
-                    on_or_after: `${today}T00:00:00.000Z`,
-                    on_or_before: `${today}T23:59:59.999Z`
+                    on_or_after: todayStart,
+                    on_or_before: tomorrowEnd
                 }
             },
             sorts: [{ property: 'Start Time', direction: 'ascending' }],
             page_size: 100
         });
 
-        console.log(`Found ${timeBlocks.results.length} blocks in Notion for ${today}`);
+        console.log(`Found ${timeBlocks.results.length} blocks in Notion for ${today} (extended range)`);
 
         if (timeBlocks.results.length === 0) {
             console.log('No blocks found, returning empty schedule');
@@ -101,9 +119,17 @@ async function getCurrentSchedule(today) {
             const start = new Date(startTime);
             const end = endTime ? new Date(endTime) : null;
             
-            // Convert to Pacific timezone
+            // Convert to Pacific timezone - need to ADD 7 hours to get from UTC to PDT
             const startPacific = new Date(start.getTime() - (7 * 60 * 60 * 1000));
             const endPacific = end ? new Date(end.getTime() - (7 * 60 * 60 * 1000)) : null;
+
+            // Filter out blocks that don't belong to "today" in Pacific time
+            const pacificMidnight = new Date(`${today}T00:00:00-07:00`);
+            const nextDayMidnight = new Date(`${today}T23:59:59-07:00`);
+            
+            if (startPacific < pacificMidnight || startPacific > nextDayMidnight) {
+                return null; // Skip blocks outside of today
+            }
 
             const formattedBlock = {
                 time: `${startPacific.getUTCHours().toString().padStart(2, '0')}:${startPacific.getUTCMinutes().toString().padStart(2, '0')}`,
@@ -118,7 +144,7 @@ async function getCurrentSchedule(today) {
             return formattedBlock;
         }).filter(block => block !== null);
 
-        console.log(`Returning ${schedule.length} formatted blocks`);
+        console.log(`Returning ${schedule.length} formatted blocks for today`);
         return schedule;
 
     } catch (error) {
@@ -128,8 +154,41 @@ async function getCurrentSchedule(today) {
     }
 }
 
-async function createTestSchedule(today) {
-    // Get wake time from morning log
+async function getWorkShift(date) {
+    try {
+        // Check Shamila Work Shift calendar
+        const workCalendarId = 'oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com';
+        
+        const events = await calendar.events.list({
+            calendarId: workCalendarId,
+            timeMin: `${date}T00:00:00-07:00`,
+            timeMax: `${date}T23:59:59-07:00`,
+            singleEvents: true,
+            orderBy: 'startTime'
+        });
+
+        if (events.data.items && events.data.items.length > 0) {
+            const workEvent = events.data.items[0];
+            const startTime = new Date(workEvent.start.dateTime || workEvent.start.date);
+            const endTime = new Date(workEvent.end.dateTime || workEvent.end.date);
+            
+            return {
+                isWorkDay: true,
+                startTime: `${startTime.getHours().toString().padStart(2, '0')}:${startTime.getMinutes().toString().padStart(2, '0')}`,
+                endTime: `${endTime.getHours().toString().padStart(2, '0')}:${endTime.getMinutes().toString().padStart(2, '0')}`,
+                title: workEvent.summary || 'Work'
+            };
+        }
+        
+        return { isWorkDay: false };
+    } catch (error) {
+        console.error('Error checking work schedule:', error.message);
+        return { isWorkDay: false }; // Default to no work if can't check
+    }
+}
+
+async function createIntelligentSchedule(today) {
+    // Get morning log data
     const morningLogResponse = await notion.databases.query({
         database_id: DAILY_LOGS_DB_ID,
         filter: {
@@ -140,44 +199,83 @@ async function createTestSchedule(today) {
     });
 
     let wakeTime = '06:30'; // default
+    let energy = 7; // default medium
+    let mood = 'Good'; // default
+    
     if (morningLogResponse.results.length > 0) {
-        const wakeTimeRaw = morningLogResponse.results[0].properties['Wake Time']?.date?.start;
+        const log = morningLogResponse.results[0].properties;
+        
+        // Get wake time
+        const wakeTimeRaw = log['Wake Time']?.date?.start;
         if (wakeTimeRaw) {
             const wake = new Date(wakeTimeRaw);
-            // Convert UTC to Pacific
             const pacificTime = new Date(wake.getTime() - (7 * 60 * 60 * 1000));
             wakeTime = `${pacificTime.getUTCHours().toString().padStart(2, '0')}:${pacificTime.getUTCMinutes().toString().padStart(2, '0')}`;
         }
+        
+        // Get energy and mood for intelligent scheduling
+        energy = log['Energy']?.number || 7;
+        mood = log['Mood']?.select?.name || 'Good';
     }
 
-    console.log(`Creating schedule starting at wake time: ${wakeTime}`);
+    console.log(`Creating schedule: Wake ${wakeTime}, Energy ${energy}, Mood ${mood}`);
 
-    // Create comprehensive schedule from wake time to 10 PM
-    const fullDayBlocks = [
-        { title: 'Morning Routine', start: wakeTime, duration: 60, type: 'Personal', energy: 'Medium' },
-        { title: 'Morning Planning', start: addMinutes(wakeTime, 60), duration: 30, type: 'Admin', energy: 'High' },
-        { title: 'Deep Work Block 1', start: addMinutes(wakeTime, 90), duration: 90, type: 'Deep Work', energy: 'High' },
-        { title: 'Break', start: addMinutes(wakeTime, 180), duration: 15, type: 'Break', energy: 'Low' },
-        { title: 'Deep Work Block 2', start: addMinutes(wakeTime, 195), duration: 90, type: 'Deep Work', energy: 'High' },
-        { title: 'Lunch Break', start: '12:00', duration: 60, type: 'Break', energy: 'Low' },
-        { title: 'Creative Work 1', start: '13:00', duration: 60, type: 'Creative', energy: 'Medium' },
-        { title: 'Admin Tasks', start: '14:00', duration: 60, type: 'Admin', energy: 'Medium' },
-        { title: 'Riley Time', start: '15:00', duration: 90, type: 'Riley Time', energy: 'Medium' },
-        { title: 'Personal Projects', start: '16:30', duration: 60, type: 'Creative', energy: 'Medium' },
-        { title: 'Wrap Up Work', start: '17:30', duration: 30, type: 'Admin', energy: 'Low' },
-        { title: 'Personal Time 1', start: '18:00', duration: 60, type: 'Personal', energy: 'Low' },
-        { title: 'Dinner & Family', start: '19:00', duration: 60, type: 'Personal', energy: 'Low' },
-        { title: 'Evening Activities', start: '20:00', duration: 60, type: 'Personal', energy: 'Low' },
-        { title: 'Wind Down', start: '21:00', duration: 60, type: 'Personal', energy: 'Low' }
-    ];
+    // Check work schedule
+    const workShift = await getWorkShift(today);
+    console.log('Work shift:', workShift);
 
     // Clear existing blocks first
     await clearTodayBlocks(today);
 
+    let schedule = [];
+    
+    if (workShift.isWorkDay) {
+        // WORK DAY SCHEDULE
+        schedule = [
+            { title: 'Morning Routine', start: wakeTime, duration: 60, type: 'Personal', energy: 'Medium' },
+            { title: 'Prep for Work', start: addMinutes(wakeTime, 60), duration: 30, type: 'Admin', energy: 'Medium' },
+            { title: workShift.title, start: workShift.startTime, duration: getMinutesBetween(workShift.startTime, workShift.endTime), type: 'Deep Work', energy: 'High' },
+            { title: 'Post-Work Transition', start: addMinutes(workShift.endTime, 0), duration: 30, type: 'Break', energy: 'Low' },
+            { title: 'Riley Time', start: addMinutes(workShift.endTime, 30), duration: 90, type: 'Riley Time', energy: 'Medium' },
+            { title: 'Dinner & Family', start: addMinutes(workShift.endTime, 120), duration: 90, type: 'Personal', energy: 'Low' },
+            { title: 'Personal Projects', start: addMinutes(workShift.endTime, 210), duration: 60, type: 'Creative', energy: 'Medium' },
+            { title: 'Evening Routine', start: addMinutes(workShift.endTime, 270), duration: 60, type: 'Personal', energy: 'Low' },
+            { title: 'Wind Down', start: addMinutes(workShift.endTime, 330), duration: 60, type: 'Personal', energy: 'Low' }
+        ];
+    } else {
+        // OFF DAY SCHEDULE - Full day with Riley time, family time, deep work
+        const morningBlocks = [
+            { title: 'Morning Routine', start: wakeTime, duration: 60, type: 'Personal', energy: 'Medium' },
+            { title: 'Morning Planning', start: addMinutes(wakeTime, 60), duration: 30, type: 'Admin', energy: energy >= 8 ? 'High' : 'Medium' }
+        ];
+        
+        // Add deep work blocks based on energy
+        if (energy >= 8) {
+            morningBlocks.push({ title: 'Deep Work Block 1', start: addMinutes(wakeTime, 90), duration: 120, type: 'Deep Work', energy: 'High' });
+            morningBlocks.push({ title: 'Break', start: addMinutes(wakeTime, 210), duration: 15, type: 'Break', energy: 'Low' });
+            morningBlocks.push({ title: 'Deep Work Block 2', start: addMinutes(wakeTime, 225), duration: 90, type: 'Deep Work', energy: 'High' });
+        } else {
+            morningBlocks.push({ title: 'Creative Work', start: addMinutes(wakeTime, 90), duration: 90, type: 'Creative', energy: 'Medium' });
+            morningBlocks.push({ title: 'Admin Tasks', start: addMinutes(wakeTime, 180), duration: 60, type: 'Admin', energy: 'Medium' });
+        }
+        
+        schedule = [
+            ...morningBlocks,
+            { title: 'Lunch Break', start: '12:00', duration: 60, type: 'Break', energy: 'Low' },
+            { title: 'Riley Time', start: '13:00', duration: 120, type: 'Riley Time', energy: 'Medium' },
+            { title: 'Personal Projects', start: '15:00', duration: 90, type: 'Creative', energy: 'Medium' },
+            { title: 'Family Time', start: '16:30', duration: 60, type: 'Personal', energy: 'Low' },
+            { title: 'Admin/Planning', start: '17:30', duration: 30, type: 'Admin', energy: 'Low' },
+            { title: 'Dinner & Family', start: '18:00', duration: 90, type: 'Personal', energy: 'Low' },
+            { title: 'Evening Activities', start: '19:30', duration: 90, type: 'Personal', energy: 'Low' },
+            { title: 'Wind Down', start: '21:00', duration: 60, type: 'Personal', energy: 'Low' }
+        ];
+    }
+
     let successCount = 0;
     let failedBlocks = [];
     
-    for (const block of fullDayBlocks) {
+    for (const block of schedule) {
         try {
             const endTime = addMinutes(block.start, block.duration);
             
@@ -215,10 +313,13 @@ async function createTestSchedule(today) {
         failed: failedBlocks.length,
         failedBlocks: failedBlocks,
         wakeTime: wakeTime,
+        workDay: workShift.isWorkDay,
+        workShift: workShift.isWorkDay ? `${workShift.startTime}-${workShift.endTime}` : 'Off Day',
         timestamp: new Date().toISOString()
     };
     
-    console.log(`Schedule creation complete: ${successCount} success, ${failedBlocks.length} failed`);
+    console.log(`Intelligent schedule creation complete: ${successCount} success, ${failedBlocks.length} failed`);
+    console.log(`Work status: ${workShift.isWorkDay ? 'WORK DAY' : 'OFF DAY'}`);
 }
 
 async function clearTodayBlocks(today) {
@@ -263,4 +364,12 @@ function addMinutes(timeStr, minutes) {
     const newHours = Math.floor(totalMins / 60) % 24;
     const newMins = totalMins % 60;
     return `${newHours.toString().padStart(2, '0')}:${newMins.toString().padStart(2, '0')}`;
+}
+
+function getMinutesBetween(startTime, endTime) {
+    const [startHours, startMins] = startTime.split(':').map(Number);
+    const [endHours, endMins] = endTime.split(':').map(Number);
+    const startTotalMins = startHours * 60 + startMins;
+    const endTotalMins = endHours * 60 + endMins;
+    return endTotalMins - startTotalMins;
 }
