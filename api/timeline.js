@@ -221,7 +221,11 @@ async function createIntelligentSchedule(today) {
         mood = log['Mood']?.select?.name || 'Good';
     }
 
-    console.log(`Creating schedule: Wake ${wakeTime}, Energy ${energy}, Mood ${mood}`);
+    console.log(`Creating intelligent schedule: Wake ${wakeTime}, Energy ${energy}, Mood ${mood}, Focus ${focusCapacity}, Social ${socialBattery}`);
+
+    // Get tasks for today
+    const tasks = await getTodaysTasks(today);
+    console.log(`Found ${tasks.length} tasks for today`);
 
     // Check work schedule
     const workShift = await getWorkShift(today);
