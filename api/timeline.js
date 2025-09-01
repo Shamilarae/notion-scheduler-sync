@@ -199,9 +199,11 @@ async function createIntelligentSchedule(today) {
         page_size: 1
     });
 
-    let wakeTime = '06:30'; // default
+    let wakeTime = '04:30'; // default for mining rotation
     let energy = 7; // default medium
     let mood = 'Good'; // default
+    let focusCapacity = 'Normal'; // default
+    let socialBattery = 'Full'; // default
     
     if (morningLogResponse.results.length > 0) {
         const log = morningLogResponse.results[0].properties;
