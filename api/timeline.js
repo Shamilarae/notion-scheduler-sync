@@ -61,41 +61,89 @@ module.exports = async function handler(req, res) {
 };
 
 async function createTestSchedule(today) {
-    console.log('STARTING TEST SCHEDULE CREATION');
-    
-    // Don't try to clear - just create with unique titles to avoid confusion
-    const timestamp = Date.now();
-    const testBlocks = [
-        { title: `Block 1:00-${timestamp}`, start: '13:00', end: '13:30' },
-        { title: `Block 1:30-${timestamp}`, start: '13:30', end: '14:00' },
-        { title: `Block 2:00-${timestamp}`, start: '14:00', end: '14:30' },
-        { title: `Block 2:30-${timestamp}`, start: '14:30', end: '15:00' },
-        { title: `Block 3:00-${timestamp}`, start: '15:00', end: '15:30' },
-        { title: `Block 3:30-${timestamp}`, start: '15:30', end: '16:00' },
-        { title: `Block 4:00-${timestamp}`, start: '16:00', end: '16:30' },
-        { title: `Block 4:30-${timestamp}`, start: '16:30', end: '17:00' },
-        { title: `Block 5:00-${timestamp}`, start: '17:00', end: '17:30' },
-        { title: `Block 5:30-${timestamp}`, start: '17:30', end: '18:00' }
+    // Get wake time from morning log
+    const morningLogResponse = await notion.databases.query({
+        database_id: DAILY_LOGS_DB_ID,
+        filter: {
+            property: 'Date',
+            date: { equals: today }
+        },
+        page_size: 1
+    });
+
+    let wakeTime = '06:30'; // default
+    if (morningLogResponse.results.length > 0) {
+        const wakeTimeRaw = morningLogResponse.results[0].properties['Wake Time']?.date?.start;
+        if (wakeTimeRaw) {
+            const wake = new Date(wakeTimeRaw);
+            const pacificHours = wake.getUTCHours() - 7;
+            const pacificMinutes = wake.getUTCMinutes();
+            const adjustedHours = pacificHours < 0 ? pacificHours + 24 : pacificHours;
+            wakeTime = `${adjustedHours.toString().padStart(2, '0')}:${pacificMinutes.toString().padStart(2, '0')}`;
+        }
+    }
+
+    console.log(`Creating full day schedule starting at wake time: ${wakeTime}`);
+
+    // Create full day schedule from wake time to 10 PM
+    const fullDayBlocks = [
+        { title: 'Morning Routine', start: wakeTime, duration: 60 },
+        { title: 'Morning Planning', start: addMinutes(wakeTime, 60), duration: 30 },
+        { title: 'Work Block 1', start: addMinutes(wakeTime, 90), duration: 90 },
+        { title: 'Break', start: addMinutes(wakeTime, 180), duration: 15 },
+        { title: 'Work Block 2', start: addMinutes(wakeTime, 195), duration: 90 },
+        { title: 'Lunch', start: '12:00', duration: 60 },
+        { title: 'Afternoon 1', start: '13:00', duration: 30 },
+        { title: 'Afternoon 2', start: '13:30', duration: 30 },
+        { title: 'Afternoon 3', start: '14:00', duration: 30 },
+        { title: 'Afternoon 4', start: '14:30', duration: 30 },
+        { title: 'Afternoon 5', start: '15:00', duration: 30 },
+        { title: 'Afternoon 6', start: '15:30', duration: 30 },
+        { title: 'Afternoon 7', start: '16:00', duration: 30 },
+        { title: 'Afternoon 8', start: '16:30', duration: 30 },
+        { title: 'End Work', start: '17:00', duration: 30 },
+        { title: 'Transition', start: '17:30', duration: 30 },
+        { title: 'Personal 1', start: '18:00', duration: 60 },
+        { title: 'Personal 2', start: '19:00', duration: 60 },
+        { title: 'Evening Routine', start: '20:00', duration: 60 },
+        { title: 'Wind Down', start: '21:00', duration: 60 }
     ];
-    
-    console.log('ATTEMPTING TO CREATE ' + testBlocks.length + ' BLOCKS');
-    
+
+    // Clear old blocks by marking them with a "DELETE" status first
+    try {
+        const existing = await notion.databases.query({
+            database_id: TIME_BLOCKS_DB_ID,
+            filter: {
+                property: 'Start Time',
+                date: { equals: today }
+            },
+            page_size: 100
+        });
+
+        for (const block of existing.results) {
+            await notion.pages.update({
+                page_id: block.id,
+                properties: {
+                    Status: { select: { name: 'Planned' } }, // Change to help identify old blocks
+                    Title: { title: [{ text: { content: 'OLD - ' + (block.properties.Title?.title[0]?.text?.content || 'Block') } }] }
+                }
+            });
+        }
+    } catch (error) {
+        console.log('Error marking old blocks: ' + error.message);
+    }
+
     let successCount = 0;
-    let failCount = 0;
     let failedBlocks = [];
     
-    for (const block of testBlocks) {
+    for (const block of fullDayBlocks) {
         try {
-            // Create ISO datetime strings for Pacific Time (UTC-7 for PDT)
             const startDate = new Date(`${today}T${block.start}:00.000`);
-            const endDate = new Date(`${today}T${block.end}:00.000`);
+            const endTime = addMinutes(block.start, block.duration);
+            const endDate = new Date(`${today}T${endTime}:00.000`);
             
-            // Convert to UTC by adding 7 hours (for PDT)
             const startUTC = new Date(startDate.getTime() + (7 * 60 * 60 * 1000));
             const endUTC = new Date(endDate.getTime() + (7 * 60 * 60 * 1000));
-            
-            const startDateTime = startUTC.toISOString();
-            const endDateTime = endUTC.toISOString();
             
             await notion.pages.create({
                 parent: { database_id: TIME_BLOCKS_DB_ID },
@@ -103,31 +151,38 @@ async function createTestSchedule(today) {
                     Title: { title: [{ text: { content: block.title } }] },
                     'Block Type': { select: { name: 'Admin' } },
                     'Energy Requirements': { select: { name: 'Medium' } },
-                    Status: { select: { name: 'Planned' } },
-                    'Start Time': { date: { start: startDateTime } },
-                    'End Time': { date: { start: endDateTime } }
+                    Status: { select: { name: 'Active' } }, // Use different status for new blocks
+                    'Start Time': { date: { start: startUTC.toISOString() } },
+                    'End Time': { date: { start: endUTC.toISOString() } }
                 }
             });
             
             successCount++;
             
         } catch (error) {
-            failCount++;
             failedBlocks.push({
                 title: block.title,
                 error: error.message,
-                time: block.start + '-' + block.end
+                time: block.start
             });
         }
     }
     
-    // Store results for debugging
     global.lastCreationResult = {
         success: successCount,
-        failed: failCount,
+        failed: failedBlocks.length,
         failedBlocks: failedBlocks,
+        wakeTime: wakeTime,
         timestamp: new Date().toISOString()
     };
+}
+
+function addMinutes(timeStr, minutes) {
+    const [hours, mins] = timeStr.split(':').map(Number);
+    const totalMins = hours * 60 + mins + minutes;
+    const newHours = Math.floor(totalMins / 60) % 24;
+    const newMins = totalMins % 60;
+    return `${newHours.toString().padStart(2, '0')}:${newMins.toString().padStart(2, '0')}`;
 }
 
 async function clearAllTodayBlocks(today) {
@@ -188,16 +243,40 @@ async function clearAllTodayBlocks(today) {
 
 async function getCurrentSchedule(today) {
     try {
-        const timeBlocks = await notion.databases.query({
+        // Get blocks with "Active" status first (new blocks), then others
+        const activeBlocks = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
-                property: 'Start Time',
-                date: { equals: today }
+                and: [
+                    {
+                        property: 'Start Time',
+                        date: { equals: today }
+                    },
+                    {
+                        property: 'Status',
+                        select: { equals: 'Active' }
+                    }
+                ]
             },
-            sorts: [{ property: 'Start Time', direction: 'ascending' }]
+            sorts: [{ property: 'Start Time', direction: 'ascending' }],
+            page_size: 50
         });
 
-        console.log(`Retrieved ${timeBlocks.results.length} blocks from Notion`);
+        // If no active blocks, fall back to all blocks
+        let timeBlocks = activeBlocks;
+        if (activeBlocks.results.length === 0) {
+            timeBlocks = await notion.databases.query({
+                database_id: TIME_BLOCKS_DB_ID,
+                filter: {
+                    property: 'Start Time',
+                    date: { equals: today }
+                },
+                sorts: [{ property: 'Start Time', direction: 'ascending' }],
+                page_size: 50
+            });
+        }
+
+        console.log(`Retrieved ${timeBlocks.results.length} blocks from Notion (Active: ${activeBlocks.results.length})`);
 
         return timeBlocks.results.map(block => {
             const startTime = block.properties['Start Time']?.date?.start;
