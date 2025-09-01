@@ -7,9 +7,10 @@
   },
   "dependencies": {
     "@notionhq/client": "^2.2.15",
-    "googleapis": "^144.0.0"
+    "googleapis": "^128.0.0"
   },
   "engines": {
     "node": "22.x"
   }
 }
+
