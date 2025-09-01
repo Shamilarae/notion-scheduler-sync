@@ -30,6 +30,12 @@ module.exports = async function handler(req, res) {
         const now = new Date();
         const response = {
             schedule: schedule,
+            debug: {
+                totalBlocks: schedule.length,
+                creationAttempted: action === 'create',
+                lastCreationResult: global.lastCreationResult || null,
+                timestamp: now.toISOString()
+            },
             lastUpdate: now.toLocaleTimeString('en-US', { 
                 hour: '2-digit', 
                 minute: '2-digit',
@@ -55,34 +61,43 @@ module.exports = async function handler(req, res) {
 };
 
 async function createTestSchedule(today) {
-    // Clear existing blocks
-    console.log('Clearing existing blocks...');
-    await clearAllTodayBlocks(today);
+    console.log('STARTING TEST SCHEDULE CREATION');
     
-    // Create SIMPLE test blocks - just afternoon ones to test
+    // Don't try to clear - just create with unique titles to avoid confusion
+    const timestamp = Date.now();
     const testBlocks = [
-        { title: 'Test Block 1:00 PM', start: '13:00', end: '13:30' },
-        { title: 'Test Block 1:30 PM', start: '13:30', end: '14:00' },
-        { title: 'Test Block 2:00 PM', start: '14:00', end: '14:30' },
-        { title: 'Test Block 2:30 PM', start: '14:30', end: '15:00' },
-        { title: 'Test Block 3:00 PM', start: '15:00', end: '15:30' },
-        { title: 'Test Block 3:30 PM', start: '15:30', end: '16:00' },
-        { title: 'Test Block 4:00 PM', start: '16:00', end: '16:30' },
-        { title: 'Test Block 4:30 PM', start: '16:30', end: '17:00' },
-        { title: 'Test Block 5:00 PM', start: '17:00', end: '17:30' },
-        { title: 'Test Block 5:30 PM', start: '17:30', end: '18:00' }
+        { title: `Block 1:00-${timestamp}`, start: '13:00', end: '13:30' },
+        { title: `Block 1:30-${timestamp}`, start: '13:30', end: '14:00' },
+        { title: `Block 2:00-${timestamp}`, start: '14:00', end: '14:30' },
+        { title: `Block 2:30-${timestamp}`, start: '14:30', end: '15:00' },
+        { title: `Block 3:00-${timestamp}`, start: '15:00', end: '15:30' },
+        { title: `Block 3:30-${timestamp}`, start: '15:30', end: '16:00' },
+        { title: `Block 4:00-${timestamp}`, start: '16:00', end: '16:30' },
+        { title: `Block 4:30-${timestamp}`, start: '16:30', end: '17:00' },
+        { title: `Block 5:00-${timestamp}`, start: '17:00', end: '17:30' },
+        { title: `Block 5:30-${timestamp}`, start: '17:30', end: '18:00' }
     ];
     
-    console.log(`Creating ${testBlocks.length} test blocks...`);
+    console.log('ATTEMPTING TO CREATE ' + testBlocks.length + ' BLOCKS');
     
-    for (const [index, block] of testBlocks.entries()) {
+    let successCount = 0;
+    let failCount = 0;
+    let failedBlocks = [];
+    
+    for (const block of testBlocks) {
         try {
-            const startDateTime = `${today}T${block.start}:00.000-07:00`;
-            const endDateTime = `${today}T${block.end}:00.000-07:00`;
+            // Create ISO datetime strings for Pacific Time (UTC-7 for PDT)
+            const startDate = new Date(`${today}T${block.start}:00.000`);
+            const endDate = new Date(`${today}T${block.end}:00.000`);
             
-            console.log(`Creating block ${index + 1}: ${block.title} (${startDateTime} to ${endDateTime})`);
-
-            const response = await notion.pages.create({
+            // Convert to UTC by adding 7 hours (for PDT)
+            const startUTC = new Date(startDate.getTime() + (7 * 60 * 60 * 1000));
+            const endUTC = new Date(endDate.getTime() + (7 * 60 * 60 * 1000));
+            
+            const startDateTime = startUTC.toISOString();
+            const endDateTime = endUTC.toISOString();
+            
+            await notion.pages.create({
                 parent: { database_id: TIME_BLOCKS_DB_ID },
                 properties: {
                     Title: { title: [{ text: { content: block.title } }] },
@@ -94,28 +109,39 @@ async function createTestSchedule(today) {
                 }
             });
             
-            console.log(`SUCCESS: Created ${block.title} - ID: ${response.id}`);
+            successCount++;
             
         } catch (error) {
-            console.error(`FAILED: ${block.title} - Error: ${error.message}`);
-            console.error('Full error:', error);
+            failCount++;
+            failedBlocks.push({
+                title: block.title,
+                error: error.message,
+                time: block.start + '-' + block.end
+            });
         }
     }
     
-    console.log('Test schedule creation complete');
+    // Store results for debugging
+    global.lastCreationResult = {
+        success: successCount,
+        failed: failCount,
+        failedBlocks: failedBlocks,
+        timestamp: new Date().toISOString()
+    };
 }
 
 async function clearAllTodayBlocks(today) {
     try {
         console.log('=== CLEARING EXISTING BLOCKS ===');
         
-        // Get ALL blocks for today, including archived ones
+        // Get ALL blocks for today - including archived ones
         const existing = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
                 property: 'Start Time',
                 date: { equals: today }
-            }
+            },
+            page_size: 100 // Get more results to catch all blocks
         });
 
         console.log(`Found ${existing.results.length} existing blocks for ${today}`);
