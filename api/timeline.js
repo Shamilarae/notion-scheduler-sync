@@ -168,15 +168,15 @@ async function getWorkShift(date) {
         });
 
         if (events.data.items && events.data.items.length > 0) {
+            // You have a work event today
             const workEvent = events.data.items[0];
-            const startTime = new Date(workEvent.start.dateTime || workEvent.start.date);
-            const endTime = new Date(workEvent.end.dateTime || workEvent.end.date);
             
+            // For multi-day rotational work, assume standard 12-hour day shift
             return {
                 isWorkDay: true,
-                startTime: `${startTime.getHours().toString().padStart(2, '0')}:${startTime.getMinutes().toString().padStart(2, '0')}`,
-                endTime: `${endTime.getHours().toString().padStart(2, '0')}:${endTime.getMinutes().toString().padStart(2, '0')}`,
-                title: workEvent.summary || 'Work'
+                startTime: '05:30', // Your actual shift start
+                endTime: '17:30',   // Your actual shift end
+                title: 'Work Shift'
             };
         }
         
@@ -230,17 +230,15 @@ async function createIntelligentSchedule(today) {
     let schedule = [];
     
     if (workShift.isWorkDay) {
-        // WORK DAY SCHEDULE
+        // WORK DAY SCHEDULE - Mining rotation: minimal morning, full evening
         schedule = [
-            { title: 'Morning Routine', start: wakeTime, duration: 60, type: 'Personal', energy: 'Medium' },
-            { title: 'Prep for Work', start: addMinutes(wakeTime, 60), duration: 30, type: 'Admin', energy: 'Medium' },
+            { title: 'Wake & Go', start: wakeTime, duration: 50, type: 'Personal', energy: 'Medium' },
             { title: workShift.title, start: workShift.startTime, duration: getMinutesBetween(workShift.startTime, workShift.endTime), type: 'Deep Work', energy: 'High' },
-            { title: 'Post-Work Transition', start: addMinutes(workShift.endTime, 0), duration: 30, type: 'Break', energy: 'Low' },
-            { title: 'Riley Time', start: addMinutes(workShift.endTime, 30), duration: 90, type: 'Riley Time', energy: 'Medium' },
-            { title: 'Dinner & Family', start: addMinutes(workShift.endTime, 120), duration: 90, type: 'Personal', energy: 'Low' },
-            { title: 'Personal Projects', start: addMinutes(workShift.endTime, 210), duration: 60, type: 'Creative', energy: 'Medium' },
-            { title: 'Evening Routine', start: addMinutes(workShift.endTime, 270), duration: 60, type: 'Personal', energy: 'Low' },
-            { title: 'Wind Down', start: addMinutes(workShift.endTime, 330), duration: 60, type: 'Personal', energy: 'Low' }
+            { title: 'Decompress', start: addMinutes(workShift.endTime, 0), duration: 30, type: 'Break', energy: 'Low' },
+            { title: 'Riley Time', start: addMinutes(workShift.endTime, 30), duration: 120, type: 'Riley Time', energy: 'Medium' },
+            { title: 'Dinner & Family', start: addMinutes(workShift.endTime, 150), duration: 90, type: 'Personal', energy: 'Low' },
+            { title: 'Personal Time', start: addMinutes(workShift.endTime, 240), duration: 60, type: 'Personal', energy: 'Low' },
+            { title: 'Wind Down', start: addMinutes(workShift.endTime, 300), duration: 60, type: 'Personal', energy: 'Low' }
         ];
     } else {
         // OFF DAY SCHEDULE - Full day with Riley time, family time, deep work
