@@ -231,16 +231,25 @@ async function createIntelligentSchedule(today) {
     let schedule = [];
     
     if (workShift.isWorkDay) {
-        // WORK DAY SCHEDULE - Mining rotation: minimal morning, full evening
-        schedule = [
-            { title: 'Wake & Go', start: wakeTime, duration: 50, type: 'Personal', energy: 'Medium' },
-            { title: workShift.title, start: workShift.startTime, duration: getMinutesBetween(workShift.startTime, workShift.endTime), type: 'Deep Work', energy: 'High' },
+        // WORK DAY SCHEDULE with intelligent micro-scheduling
+        const preWorkBlocks = [
+            { title: 'Wake & Go', start: wakeTime, duration: 60, type: 'Personal', energy: 'Medium' }
+        ];
+        
+        // Create intelligent work blocks (this replaces the single "Work Shift" block)
+        const workBlocks = createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBattery, tasks);
+        
+        const postWorkBlocks = [
             { title: 'Decompress', start: addMinutes(workShift.endTime, 0), duration: 30, type: 'Break', energy: 'Low' },
             { title: 'Riley Time', start: addMinutes(workShift.endTime, 30), duration: 120, type: 'Riley Time', energy: 'Medium' },
             { title: 'Dinner & Family', start: addMinutes(workShift.endTime, 150), duration: 90, type: 'Personal', energy: 'Low' },
             { title: 'Personal Time', start: addMinutes(workShift.endTime, 240), duration: 60, type: 'Personal', energy: 'Low' },
             { title: 'Wind Down', start: addMinutes(workShift.endTime, 300), duration: 60, type: 'Personal', energy: 'Low' }
         ];
+        
+        schedule = [...preWorkBlocks, ...workBlocks, ...postWorkBlocks];
+        
+        console.log(`Work day schedule: ${preWorkBlocks.length} pre-work + ${workBlocks.length} work blocks + ${postWorkBlocks.length} post-work = ${schedule.length} total blocks`);
     } else {
         // OFF DAY SCHEDULE - Full day with Riley time, family time, deep work
         const morningBlocks = [
