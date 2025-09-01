@@ -78,7 +78,6 @@ async function getCurrentSchedule(today) {
     try {
         console.log(`Getting schedule for ${today}...`);
         
-        // Get blocks that start today OR tomorrow (to catch evening blocks that cross midnight)
         const todayStart = `${today}T00:00:00.000Z`;
         const tomorrowDate = new Date(today + 'T00:00:00.000Z');
         tomorrowDate.setDate(tomorrowDate.getDate() + 1);
@@ -97,7 +96,7 @@ async function getCurrentSchedule(today) {
             page_size: 100
         });
 
-        console.log(`Found ${timeBlocks.results.length} blocks in Notion for ${today} (extended range)`);
+        console.log(`Found ${timeBlocks.results.length} blocks in Notion for ${today}`);
 
         if (timeBlocks.results.length === 0) {
             console.log('No blocks found, returning empty schedule');
@@ -116,20 +115,17 @@ async function getCurrentSchedule(today) {
                 return null;
             }
 
-            // Convert UTC to Pacific Time (PDT = UTC-7, PST = UTC-8)
             const start = new Date(startTime);
             const end = endTime ? new Date(endTime) : null;
             
-            // Convert to Pacific timezone - need to ADD 7 hours to get from UTC to PDT
             const startPacific = new Date(start.getTime() - (7 * 60 * 60 * 1000));
             const endPacific = end ? new Date(end.getTime() - (7 * 60 * 60 * 1000)) : null;
 
-            // Filter out blocks that don't belong to "today" in Pacific time
             const pacificMidnight = new Date(`${today}T00:00:00-07:00`);
             const nextDayMidnight = new Date(`${today}T23:59:59-07:00`);
             
             if (startPacific < pacificMidnight || startPacific > nextDayMidnight) {
-                return null; // Skip blocks outside of today
+                return null;
             }
 
             const formattedBlock = {
@@ -141,7 +137,6 @@ async function getCurrentSchedule(today) {
                 details: `${energy} energy • ${blockType}`
             };
 
-            console.log(`Block: ${title} - ${formattedBlock.time} to ${formattedBlock.endTime}`);
             return formattedBlock;
         }).filter(block => block !== null);
 
@@ -150,14 +145,12 @@ async function getCurrentSchedule(today) {
 
     } catch (error) {
         console.error('Failed to get schedule:', error.message);
-        console.error('Full error:', error);
         return [];
     }
 }
 
 async function getWorkShift(date) {
     try {
-        // Check Shamila Work Shift calendar
         const workCalendarId = 'oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com';
         
         const events = await calendar.events.list({
@@ -169,14 +162,10 @@ async function getWorkShift(date) {
         });
 
         if (events.data.items && events.data.items.length > 0) {
-            // You have a work event today
-            const workEvent = events.data.items[0];
-            
-            // For multi-day rotational work, assume standard 12-hour day shift
             return {
                 isWorkDay: true,
-                startTime: '05:30', // Your actual shift start
-                endTime: '17:30',   // Your actual shift end
+                startTime: '05:30',
+                endTime: '17:30',
                 title: 'Work Shift'
             };
         }
@@ -184,12 +173,11 @@ async function getWorkShift(date) {
         return { isWorkDay: false };
     } catch (error) {
         console.error('Error checking work schedule:', error.message);
-        return { isWorkDay: false }; // Default to no work if can't check
+        return { isWorkDay: false };
     }
 }
 
 async function createIntelligentSchedule(today) {
-    // Get morning log data
     const morningLogResponse = await notion.databases.query({
         database_id: DAILY_LOGS_DB_ID,
         filter: {
@@ -199,16 +187,15 @@ async function createIntelligentSchedule(today) {
         page_size: 1
     });
 
-    let wakeTime = '04:30'; // default for mining rotation
-    let energy = 7; // default medium
-    let mood = 'Good'; // default
-    let focusCapacity = 'Normal'; // default
-    let socialBattery = 'Full'; // default
+    let wakeTime = '04:30';
+    let energy = 7;
+    let mood = 'Good';
+    let focusCapacity = 'Normal';
+    let socialBattery = 'Full';
     
     if (morningLogResponse.results.length > 0) {
         const log = morningLogResponse.results[0].properties;
         
-        // Get wake time
         const wakeTimeRaw = log['Wake Time']?.date?.start;
         if (wakeTimeRaw) {
             const wake = new Date(wakeTimeRaw);
@@ -216,35 +203,29 @@ async function createIntelligentSchedule(today) {
             wakeTime = `${pacificTime.getUTCHours().toString().padStart(2, '0')}:${pacificTime.getUTCMinutes().toString().padStart(2, '0')}`;
         }
         
-        // Get all morning log data for intelligent scheduling
         energy = log['Energy']?.number || 7;
         mood = log['Mood']?.select?.name || 'Good';
         focusCapacity = log['Focus Capacity']?.select?.name || 'Normal';
         socialBattery = log['Social Battery']?.select?.name || 'Full';
     }
 
-    console.log(`Creating intelligent schedule: Wake ${wakeTime}, Energy ${energy}, Mood ${mood}, Focus ${focusCapacity}, Social ${socialBattery}`);
+    console.log(`Creating intelligent schedule: Wake ${wakeTime}, Energy ${energy}, Mood ${mood}`);
 
-    // Get tasks for today
     const tasks = await getTodaysTasks(today);
     console.log(`Found ${tasks.length} tasks for today`);
 
-    // Check work schedule
     const workShift = await getWorkShift(today);
     console.log('Work shift:', workShift);
 
-    // Clear existing blocks first
     await clearTodayBlocks(today);
 
     let schedule = [];
     
     if (workShift.isWorkDay) {
-        // WORK DAY SCHEDULE with intelligent micro-scheduling
         const preWorkBlocks = [
             { title: 'Wake & Go', start: wakeTime, duration: 60, type: 'Personal', energy: 'Medium' }
         ];
         
-        // Create intelligent work blocks (this replaces the single "Work Shift" block)
         const workBlocks = createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBattery, tasks);
         
         const postWorkBlocks = [
@@ -257,16 +238,12 @@ async function createIntelligentSchedule(today) {
         
         schedule = [...preWorkBlocks, ...workBlocks, ...postWorkBlocks];
         
-        console.log(`Work day schedule: ${preWorkBlocks.length} pre-work + ${workBlocks.length} work blocks + ${postWorkBlocks.length} post-work = ${schedule.length} total blocks`);
-        
     } else {
-        // OFF DAY SCHEDULE - Full day with Riley time, family time, deep work
         const morningBlocks = [
             { title: 'Morning Routine', start: wakeTime, duration: 60, type: 'Personal', energy: 'Medium' },
             { title: 'Morning Planning', start: addMinutes(wakeTime, 60), duration: 30, type: 'Admin', energy: energy >= 8 ? 'High' : 'Medium' }
         ];
         
-        // Add deep work blocks based on energy
         if (energy >= 8) {
             morningBlocks.push({ title: 'Deep Work Block 1', start: addMinutes(wakeTime, 90), duration: 120, type: 'Deep Work', energy: 'High' });
             morningBlocks.push({ title: 'Break', start: addMinutes(wakeTime, 210), duration: 15, type: 'Break', energy: 'Low' });
@@ -296,7 +273,6 @@ async function createIntelligentSchedule(today) {
         try {
             const endTime = addMinutes(block.start, block.duration);
             
-            // Convert Pacific time to UTC for storage
             const startUTC = new Date(`${today}T${block.start}:00.000-07:00`);
             const endUTC = new Date(`${today}T${endTime}:00.000-07:00`);
             
@@ -313,10 +289,8 @@ async function createIntelligentSchedule(today) {
             });
             
             successCount++;
-            console.log(`Created: ${block.title} (${block.start} - ${endTime})`);
             
         } catch (error) {
-            console.error(`Failed to create ${block.title}:`, error.message);
             failedBlocks.push({
                 title: block.title,
                 error: error.message,
@@ -339,14 +313,10 @@ async function createIntelligentSchedule(today) {
         tasksCount: tasks.length,
         timestamp: new Date().toISOString()
     };
-    
-    console.log(`Intelligent schedule creation complete: ${successCount} success, ${failedBlocks.length} failed`);
-    console.log(`Morning log data: Energy ${energy}, Mood ${mood}, Focus ${focusCapacity}, Social ${socialBattery}`);
 }
 
 async function getTodaysTasks(today) {
     try {
-        // Get tasks scheduled for today or overdue
         const tasksResponse = await notion.databases.query({
             database_id: TASKS_DB_ID,
             filter: {
@@ -362,8 +332,8 @@ async function getTodaysTasks(today) {
                 ]
             },
             sorts: [
-                { property: 'Priority', direction: 'ascending' }, // Higher priority first
-                { property: 'Due', direction: 'ascending' } // Earlier due dates first
+                { property: 'Priority', direction: 'ascending' },
+                { property: 'Due', direction: 'ascending' }
             ],
             page_size: 50
         });
@@ -374,7 +344,7 @@ async function getTodaysTasks(today) {
             const due = task.properties.Due?.date?.start;
             const project = task.properties.Project?.select?.name;
             const routine = task.properties.Routine?.checkbox || false;
-            const estimatedTime = task.properties['Estimated Time']?.number || 30; // default 30 min
+            const estimatedTime = task.properties['Estimated Time']?.number || 30;
             
             return {
                 title,
@@ -397,15 +367,11 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
     let currentTime = workShift.startTime;
     const endTime = workShift.endTime;
     
-    // Separate routine vs project tasks
     const routineTasks = tasks.filter(t => t.routine);
     const projectTasks = tasks.filter(t => !t.routine);
     
-    console.log(`Creating work blocks: ${routineTasks.length} routine, ${projectTasks.length} project tasks`);
-    
-    // FIRST HOUR: Routine tasks (due in morning)
     if (routineTasks.length > 0) {
-        for (const task of routineTasks.slice(0, 2)) { // Max 2 routine tasks
+        for (const task of routineTasks.slice(0, 2)) {
             workBlocks.push({
                 title: task.title,
                 start: currentTime,
@@ -416,7 +382,6 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
             currentTime = addMinutes(currentTime, 30);
         }
     } else {
-        // No routine tasks - start with general admin
         workBlocks.push({
             title: 'Morning Admin',
             start: currentTime,
@@ -427,27 +392,23 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
         currentTime = addMinutes(currentTime, 30);
     }
     
-    // Create blocks for the rest of the shift based on energy patterns
     while (getMinutesBetween(currentTime, endTime) >= 30) {
         const remainingMinutes = getMinutesBetween(currentTime, endTime);
         const currentHour = parseInt(currentTime.split(':')[0]);
         
-        // Energy pattern: High morning (6-10), medium mid-day (10-14), low afternoon (14-17)
         let blockEnergy, blockType, duration;
         
         if (currentHour < 10) {
-            // Morning: High energy period
             if (energy >= 8 && focusCapacity === 'Sharp') {
                 blockType = 'Deep Work';
                 blockEnergy = 'High';
-                duration = 90; // 1.5 hour deep focus blocks
+                duration = 90;
             } else {
                 blockType = 'Admin';
                 blockEnergy = 'Medium';
                 duration = 60;
             }
         } else if (currentHour < 14) {
-            // Mid-day: Steady work
             if (energy >= 6) {
                 blockType = projectTasks.length > 0 ? 'Creative' : 'Admin';
                 blockEnergy = 'Medium';
@@ -458,13 +419,11 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
                 duration = 30;
             }
         } else {
-            // Afternoon: Lower energy, more admin
             blockType = 'Admin';
             blockEnergy = 'Low';
             duration = 30;
         }
         
-        // Add lunch break
         if (currentTime === '12:00') {
             workBlocks.push({
                 title: 'Lunch Break',
@@ -477,7 +436,6 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
             continue;
         }
         
-        // Add breaks every 2-3 hours based on energy
         const hoursSinceStart = getMinutesBetween(workShift.startTime, currentTime) / 60;
         if (hoursSinceStart > 0 && hoursSinceStart % (energy >= 7 ? 3 : 2) === 0) {
             workBlocks.push({
@@ -491,12 +449,10 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
             continue;
         }
         
-        // Adjust duration if near end of shift
         if (remainingMinutes < duration) {
             duration = remainingMinutes;
         }
         
-        // Get next task or create generic block
         let blockTitle;
         if (projectTasks.length > 0 && (blockType === 'Deep Work' || blockType === 'Creative')) {
             const nextTask = projectTasks.shift();
@@ -518,15 +474,11 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
         currentTime = addMinutes(currentTime, duration);
     }
     
-    console.log(`Created ${workBlocks.length} work blocks from ${workShift.startTime} to ${workShift.endTime}`);
     return workBlocks;
-}
 }
 
 async function clearTodayBlocks(today) {
     try {
-        console.log('Clearing existing blocks...');
-        
         const existing = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
@@ -539,8 +491,6 @@ async function clearTodayBlocks(today) {
             page_size: 100
         });
 
-        console.log(`Found ${existing.results.length} existing blocks to clear`);
-
         for (const block of existing.results) {
             try {
                 await notion.pages.update({
@@ -551,9 +501,6 @@ async function clearTodayBlocks(today) {
                 console.error(`Failed to archive block ${block.id}:`, error.message);
             }
         }
-        
-        console.log(`Cleared ${existing.results.length} blocks`);
-        
     } catch (error) {
         console.error('Error clearing blocks:', error.message);
     }
