@@ -6,6 +6,7 @@ const notion = new Client({
 
 const TIME_BLOCKS_DB_ID = '2569f86b4f8e80439779e754eca8a066';
 const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
+const TASKS_DB_ID = '2169f86b4f8e802ab206f730a174b72b';
 
 // Google Calendar integration using service account
 const { google } = require('googleapis');
@@ -362,6 +363,184 @@ function addMinutes(timeStr, minutes) {
     const newHours = Math.floor(totalMins / 60) % 24;
     const newMins = totalMins % 60;
     return `${newHours.toString().padStart(2, '0')}:${newMins.toString().padStart(2, '0')}`;
+}
+
+async function getTodaysTasks(today) {
+    try {
+        // Get tasks scheduled for today or overdue
+        const tasksResponse = await notion.databases.query({
+            database_id: TASKS_DB_ID,
+            filter: {
+                or: [
+                    {
+                        property: 'Due',
+                        date: { on_or_before: today }
+                    },
+                    {
+                        property: 'Schedule Today?',
+                        checkbox: { equals: true }
+                    }
+                ]
+            },
+            sorts: [
+                { property: 'Priority', direction: 'ascending' }, // Higher priority first
+                { property: 'Due', direction: 'ascending' } // Earlier due dates first
+            ],
+            page_size: 50
+        });
+
+        return tasksResponse.results.map(task => {
+            const title = task.properties.Name?.title[0]?.text?.content || 'Untitled Task';
+            const priority = task.properties.Priority?.select?.name || 'Medium';
+            const due = task.properties.Due?.date?.start;
+            const project = task.properties.Project?.select?.name;
+            const routine = task.properties.Routine?.checkbox || false;
+            const estimatedTime = task.properties['Estimated Time']?.number || 30; // default 30 min
+            
+            return {
+                title,
+                priority,
+                due,
+                project,
+                routine,
+                estimatedTime,
+                id: task.id
+            };
+        });
+    } catch (error) {
+        console.error('Error getting tasks:', error.message);
+        return [];
+    }
+}
+
+function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBattery, tasks) {
+    const workBlocks = [];
+    let currentTime = workShift.startTime;
+    const endTime = workShift.endTime;
+    
+    // Separate routine vs project tasks
+    const routineTasks = tasks.filter(t => t.routine);
+    const projectTasks = tasks.filter(t => !t.routine);
+    
+    console.log(`Creating work blocks: ${routineTasks.length} routine, ${projectTasks.length} project tasks`);
+    
+    // FIRST HOUR: Routine tasks (due in morning)
+    if (routineTasks.length > 0) {
+        for (const task of routineTasks.slice(0, 2)) { // Max 2 routine tasks
+            workBlocks.push({
+                title: task.title,
+                start: currentTime,
+                duration: 30,
+                type: 'Admin',
+                energy: 'Medium'
+            });
+            currentTime = addMinutes(currentTime, 30);
+        }
+    } else {
+        // No routine tasks - start with general admin
+        workBlocks.push({
+            title: 'Morning Admin',
+            start: currentTime,
+            duration: 30,
+            type: 'Admin',
+            energy: 'Medium'
+        });
+        currentTime = addMinutes(currentTime, 30);
+    }
+    
+    // Create blocks for the rest of the shift based on energy patterns
+    while (getMinutesBetween(currentTime, endTime) >= 30) {
+        const remainingMinutes = getMinutesBetween(currentTime, endTime);
+        const currentHour = parseInt(currentTime.split(':')[0]);
+        
+        // Energy pattern: High morning (6-10), medium mid-day (10-14), low afternoon (14-17)
+        let blockEnergy, blockType, duration;
+        
+        if (currentHour < 10) {
+            // Morning: High energy period
+            if (energy >= 8 && focusCapacity === 'Sharp') {
+                blockType = 'Deep Work';
+                blockEnergy = 'High';
+                duration = 90; // 1.5 hour deep focus blocks
+            } else {
+                blockType = 'Admin';
+                blockEnergy = 'Medium';
+                duration = 60;
+            }
+        } else if (currentHour < 14) {
+            // Mid-day: Steady work
+            if (energy >= 6) {
+                blockType = projectTasks.length > 0 ? 'Creative' : 'Admin';
+                blockEnergy = 'Medium';
+                duration = 60;
+            } else {
+                blockType = 'Admin';
+                blockEnergy = 'Medium';
+                duration = 30;
+            }
+        } else {
+            // Afternoon: Lower energy, more admin
+            blockType = 'Admin';
+            blockEnergy = 'Low';
+            duration = 30;
+        }
+        
+        // Add lunch break
+        if (currentTime === '12:00') {
+            workBlocks.push({
+                title: 'Lunch Break',
+                start: currentTime,
+                duration: 30,
+                type: 'Break',
+                energy: 'Low'
+            });
+            currentTime = addMinutes(currentTime, 30);
+            continue;
+        }
+        
+        // Add breaks every 2-3 hours based on energy
+        const hoursSinceStart = getMinutesBetween(workShift.startTime, currentTime) / 60;
+        if (hoursSinceStart > 0 && hoursSinceStart % (energy >= 7 ? 3 : 2) === 0) {
+            workBlocks.push({
+                title: 'Break',
+                start: currentTime,
+                duration: 15,
+                type: 'Break',
+                energy: 'Low'
+            });
+            currentTime = addMinutes(currentTime, 15);
+            continue;
+        }
+        
+        // Adjust duration if near end of shift
+        if (remainingMinutes < duration) {
+            duration = remainingMinutes;
+        }
+        
+        // Get next task or create generic block
+        let blockTitle;
+        if (projectTasks.length > 0 && (blockType === 'Deep Work' || blockType === 'Creative')) {
+            const nextTask = projectTasks.shift();
+            blockTitle = nextTask.title;
+        } else {
+            blockTitle = blockType === 'Deep Work' ? 'Deep Focus Work' : 
+                       blockType === 'Creative' ? 'Project Work' :
+                       blockType === 'Admin' ? 'Admin Tasks' : 'Work Block';
+        }
+        
+        workBlocks.push({
+            title: blockTitle,
+            start: currentTime,
+            duration: duration,
+            type: blockType,
+            energy: blockEnergy
+        });
+        
+        currentTime = addMinutes(currentTime, duration);
+    }
+    
+    console.log(`Created ${workBlocks.length} work blocks from ${workShift.startTime} to ${workShift.endTime}`);
+    return workBlocks;
 }
 
 function getMinutesBetween(startTime, endTime) {
