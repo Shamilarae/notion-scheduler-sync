@@ -370,6 +370,9 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
     const routineTasks = tasks.filter(t => t.routine);
     const projectTasks = tasks.filter(t => !t.routine);
     
+    console.log(`Creating work blocks: Energy ${energy}, Focus ${focusCapacity}, ${routineTasks.length} routine, ${projectTasks.length} project tasks`);
+    
+    // FIRST HOUR: Routine tasks (due in morning)
     if (routineTasks.length > 0) {
         for (const task of routineTasks.slice(0, 2)) {
             workBlocks.push({
@@ -382,6 +385,7 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
             currentTime = addMinutes(currentTime, 30);
         }
     } else {
+        // No routine tasks - start with general admin
         workBlocks.push({
             title: 'Morning Admin',
             start: currentTime,
@@ -398,32 +402,48 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
         
         let blockEnergy, blockType, duration;
         
-        if (currentHour < 10) {
+        // Morning (6-10): High energy work
+        if (currentHour >= 6 && currentHour < 10) {
             if (energy >= 8 && focusCapacity === 'Sharp') {
                 blockType = 'Deep Work';
                 blockEnergy = 'High';
-                duration = 90;
+                duration = 90; // 1.5 hour blocks
+            } else if (energy >= 7) {
+                blockType = 'Creative';
+                blockEnergy = 'High';
+                duration = 60; // 1 hour blocks
             } else {
                 blockType = 'Admin';
                 blockEnergy = 'Medium';
                 duration = 60;
             }
-        } else if (currentHour < 14) {
+        } 
+        // Mid-day (10-14): Steady productive work
+        else if (currentHour >= 10 && currentHour < 14) {
+            if (energy >= 7 && focusCapacity !== 'Scattered') {
+                blockType = projectTasks.length > 0 ? 'Creative' : 'Deep Work';
+                blockEnergy = 'Medium';
+                duration = 90; // Longer blocks when energy is good
+            } else {
+                blockType = 'Admin';
+                blockEnergy = 'Medium';
+                duration = 60;
+            }
+        } 
+        // Afternoon (14+): Lower energy, shorter blocks
+        else {
             if (energy >= 6) {
-                blockType = projectTasks.length > 0 ? 'Creative' : 'Admin';
+                blockType = 'Creative';
                 blockEnergy = 'Medium';
                 duration = 60;
             } else {
                 blockType = 'Admin';
-                blockEnergy = 'Medium';
+                blockEnergy = 'Low';
                 duration = 30;
             }
-        } else {
-            blockType = 'Admin';
-            blockEnergy = 'Low';
-            duration = 30;
         }
         
+        // Add lunch break
         if (currentTime === '12:00') {
             workBlocks.push({
                 title: 'Lunch Break',
@@ -436,8 +456,9 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
             continue;
         }
         
+        // Add breaks every 2-3 hours based on energy
         const hoursSinceStart = getMinutesBetween(workShift.startTime, currentTime) / 60;
-        if (hoursSinceStart > 0 && hoursSinceStart % (energy >= 7 ? 3 : 2) === 0) {
+        if (hoursSinceStart > 0 && hoursSinceStart % (energy >= 7 ? 3 : 2.5) === 0) {
             workBlocks.push({
                 title: 'Break',
                 start: currentTime,
@@ -449,17 +470,19 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
             continue;
         }
         
+        // Adjust duration if near end of shift
         if (remainingMinutes < duration) {
             duration = remainingMinutes;
         }
         
+        // Get specific task or create appropriate work block
         let blockTitle;
         if (projectTasks.length > 0 && (blockType === 'Deep Work' || blockType === 'Creative')) {
             const nextTask = projectTasks.shift();
-            blockTitle = nextTask.title;
+            blockTitle = `${blockType}: ${nextTask.title}`;
         } else {
             blockTitle = blockType === 'Deep Work' ? 'Deep Focus Work' : 
-                       blockType === 'Creative' ? 'Project Work' :
+                       blockType === 'Creative' ? 'Creative/Project Work' :
                        blockType === 'Admin' ? 'Admin Tasks' : 'Work Block';
         }
         
@@ -474,6 +497,7 @@ function createIntelligentWorkBlocks(workShift, energy, focusCapacity, socialBat
         currentTime = addMinutes(currentTime, duration);
     }
     
+    console.log(`Created ${workBlocks.length} work blocks: Energy ${energy} -> Mix of Deep Work, Creative, Admin based on time of day`);
     return workBlocks;
 }
 
