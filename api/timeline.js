@@ -107,6 +107,9 @@ async function createTestSchedule(today) {
 
 async function clearAllTodayBlocks(today) {
     try {
+        console.log('=== CLEARING EXISTING BLOCKS ===');
+        
+        // Get ALL blocks for today, including archived ones
         const existing = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
@@ -115,18 +118,45 @@ async function clearAllTodayBlocks(today) {
             }
         });
 
-        console.log(`Found ${existing.results.length} existing blocks to clear`);
+        console.log(`Found ${existing.results.length} existing blocks for ${today}`);
+
+        if (existing.results.length === 0) {
+            console.log('No existing blocks to clear');
+            return;
+        }
+
+        // List all blocks we're about to clear
+        existing.results.forEach((block, index) => {
+            const title = block.properties.Title?.title[0]?.text?.content || 'Untitled';
+            const startTime = block.properties['Start Time']?.date?.start;
+            console.log(`Block ${index + 1}: ${title} (${startTime}) - ID: ${block.id}`);
+        });
+
+        console.log('Archiving blocks...');
+        let clearCount = 0;
 
         for (const block of existing.results) {
-            await notion.pages.update({
-                page_id: block.id,
-                archived: true
-            });
+            try {
+                await notion.pages.update({
+                    page_id: block.id,
+                    archived: true
+                });
+                clearCount++;
+                console.log(`Archived block ${clearCount}/${existing.results.length}`);
+            } catch (archiveError) {
+                console.error(`Failed to archive block ${block.id}:`, archiveError.message);
+            }
         }
         
-        console.log(`Cleared ${existing.results.length} blocks`);
+        console.log(`Successfully cleared ${clearCount}/${existing.results.length} blocks`);
+        
+        // Wait a moment for Notion to process the archives
+        console.log('Waiting 2 seconds for Notion to process archives...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
     } catch (error) {
-        console.error('Error clearing blocks:', error.message);
+        console.error('Error in clearAllTodayBlocks:', error.message);
+        throw error; // Don't continue if clearing fails
     }
 }
 
