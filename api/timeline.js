@@ -366,7 +366,8 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     currentTime = addMinutes(currentTime, 30);
     
     // PRIORITY: Routine tasks before 10 AM (but also before work starts)
-    while (getMinutesBetween(currentTime, Math.min(timeToMinutes('10:00'), timeToMinutes(workShift.startTime))) >= 30 && availableRoutineTasks.length > 0) {
+    const earliestWorkEnd = minutesToTime(Math.min(timeToMinutes('10:00'), timeToMinutes(workShift.startTime)));
+    while (getMinutesBetween(currentTime, earliestWorkEnd) >= 30 && availableRoutineTasks.length > 0) {
         const task = availableRoutineTasks.shift();
         schedule.push({
             title: task.title,
