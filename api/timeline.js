@@ -1,297 +1,4 @@
-const { Client } = require('@notionhq/client');
-
-const notion = new Client({
-    auth: process.env.NOTION_TOKEN
-});
-
-const TIME_BLOCKS_DB_ID = '2569f86b4f8e80439779e754eca8a066';
-const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
-const TASKS_DB_ID = '2169f86b4f8e802ab206f730a174b72b';
-
-// Google Calendar integration with WRITE permissions
-const { google } = require('googleapis');
-
-const auth = new google.auth.GoogleAuth({
-    credentials: {
-        client_email: process.env.GOOGLE_CLIENT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    },
-    scopes: [
-        'https://www.googleapis.com/auth/calendar.readonly',
-        'https://www.googleapis.com/auth/calendar'
-    ],
-});
-
-const calendar = google.calendar({ version: 'v3', auth });
-
-// Calendar routing based on your Python script
-const BLOCK_TYPE_TO_CALENDAR_ID = {
-    'deep-work': '09b6f8683cb5c58381f1ce55fb75d56f644187db041705dc85cec04d279cb7bb@group.calendar.google.com',
-    'creative': 'shamilarae@gmail.com',
-    'admin': 'ba46fd78742e193e5c80d2a0ce5cf83751fe66c8b3ac6433c5ad2eb3947295c8@group.calendar.google.com', 
-    'meeting': '80a0f0cdb416ef47c50563665533e3b83b30a5a9ca513bed4899045c9828b577@group.calendar.google.com',
-    'riley-time': 'family13053487624784455294@group.calendar.google.com',
-    'personal': 'shamilarae@gmail.com',
-    'break': 'shamilarae@gmail.com',
-    'routine': 'a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09@group.calendar.google.com'
-};
-
-// Work schedule configuration
-const WORK_SCHEDULE = {
-    calendarId: 'oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com',
-    startDate: '2025-08-28',
-    endDate: '2025-09-10',
-    dailyStart: '05:30',
-    dailyEnd: '17:30'
-};
-
-module.exports = async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-
-    try {
-        const today = new Date().toISOString().split('T')[0];
-        const action = req.query.action || 'display';
-
-        if (action === 'create') {
-            console.log('Creating intelligent schedule with enhanced logic...');
-            await createIntelligentSchedule(today);
-        }
-
-        const schedule = await getCurrentSchedule(today);
-
-        const now = new Date();
-        const response = {
-            schedule: schedule,
-            debug: {
-                totalBlocks: schedule.length,
-                creationAttempted: action === 'create',
-                lastCreationResult: global.lastCreationResult || null,
-                timestamp: now.toISOString()
-            },
-            lastUpdate: now.toLocaleTimeString('en-US', { 
-                hour: '2-digit', 
-                minute: '2-digit',
-                timeZone: 'America/Vancouver'
-            }),
-            date: now.toLocaleDateString('en-US', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
-            })
-        };
-
-        res.status(200).json(response);
-
-    } catch (error) {
-        console.error('Timeline API Error:', error);
-        res.status(500).json({ 
-            error: 'Failed to generate timeline',
-            details: error.message
-        });
-    }
-};
-
-async function getCurrentSchedule(today) {
-    try {
-        console.log(`Getting schedule for ${today}...`);
-        
-        const todayStart = `${today}T00:00:00.000Z`;
-        const tomorrowDate = new Date(today + 'T00:00:00.000Z');
-        tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-        const tomorrowEnd = tomorrowDate.toISOString().split('T')[0] + 'T23:59:59.999Z';
-        
-        const timeBlocks = await notion.databases.query({
-            database_id: TIME_BLOCKS_DB_ID,
-            filter: {
-                property: 'Start Time',
-                date: {
-                    on_or_after: todayStart,
-                    on_or_before: tomorrowEnd
-                }
-            },
-            sorts: [{ property: 'Start Time', direction: 'ascending' }],
-            page_size: 100
-        });
-
-        console.log(`Found ${timeBlocks.results.length} blocks in Notion for ${today}`);
-
-        if (timeBlocks.results.length === 0) {
-            console.log('No blocks found, returning empty schedule');
-            return [];
-        }
-
-        const schedule = timeBlocks.results.map(block => {
-            const startTime = block.properties['Start Time']?.date?.start;
-            const endTime = block.properties['End Time']?.date?.start;
-            const title = block.properties.Title?.title[0]?.text?.content || 'Untitled';
-            const blockType = block.properties['Block Type']?.select?.name || 'admin';
-            const energy = block.properties['Energy Requirements']?.select?.name || 'medium';
-
-            if (!startTime) {
-                console.log(`Block "${title}" has no start time, skipping`);
-                return null;
-            }
-
-            const start = new Date(startTime);
-            const end = endTime ? new Date(endTime) : null;
-            
-            // Get local time components directly from the Date object
-            const startLocal = start;
-            const endLocal = end;
-
-            const pacificMidnight = new Date(`${today}T00:00:00-07:00`);
-            const nextDayMidnight = new Date(`${today}T23:59:59-07:00`);
-            
-            if (startLocal < pacificMidnight || startLocal > nextDayMidnight) {
-                return null;
-            }
-
-            const formattedBlock = {
-                time: `${startLocal.getHours().toString().padStart(2, '0')}:${startLocal.getMinutes().toString().padStart(2, '0')}`,
-                endTime: endLocal ? `${endLocal.getHours().toString().padStart(2, '0')}:${endLocal.getMinutes().toString().padStart(2, '0')}` : '',
-                title,
-                type: blockType.toLowerCase().replace(/\s+/g, '-'),
-                energy: energy.toLowerCase(),
-                details: `${energy} energy • ${blockType}`
-            };
-
-            return formattedBlock;
-        }).filter(block => block !== null);
-
-        console.log(`Returning ${schedule.length} formatted blocks for today`);
-        return schedule;
-
-    } catch (error) {
-        console.error('Failed to get schedule:', error.message);
-        return [];
-    }
-}
-
-async function getWorkShift(date) {
-    try {
-        const workCalendarId = WORK_SCHEDULE.calendarId;
-        
-        const events = await calendar.events.list({
-            calendarId: workCalendarId,
-            timeMin: `${date}T00:00:00-07:00`,
-            timeMax: `${date}T23:59:59-07:00`,
-            singleEvents: true,
-            orderBy: 'startTime'
-        });
-
-        if (events.data.items && events.data.items.length > 0) {
-            return {
-                isWorkDay: true,
-                startTime: WORK_SCHEDULE.dailyStart,
-                endTime: WORK_SCHEDULE.dailyEnd,
-                title: 'Work Shift'
-            };
-        }
-        
-        return { isWorkDay: false };
-    } catch (error) {
-        console.error('Error checking work schedule:', error.message);
-        return { isWorkDay: false };
-    }
-}
-
-async function createIntelligentSchedule(today) {
-    const morningLogResponse = await notion.databases.query({
-        database_id: DAILY_LOGS_DB_ID,
-        filter: {
-            property: 'Date',
-            date: { equals: today }
-        },
-        page_size: 1
-    });
-
-    let wakeTime = '04:30';
-    let energy = 7;
-    let mood = 'Good';
-    let focusCapacity = 'Normal';
-    let socialBattery = 'Full';
-    
-    if (morningLogResponse.results.length > 0) {
-        const log = morningLogResponse.results[0].properties;
-        
-        const wakeTimeRaw = log['Wake Time']?.date?.start;
-        if (wakeTimeRaw) {
-            const wake = new Date(wakeTimeRaw);
-            // Get the local time components directly from the Date object
-            const hours = wake.getHours();
-            const minutes = wake.getMinutes();
-            wakeTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-        }
-        
-        energy = log['Energy']?.number || 7;
-        mood = log['Mood']?.select?.name || 'Good';
-        focusCapacity = log['Focus Capacity']?.select?.name || 'Normal';
-        socialBattery = log['Social Battery']?.select?.name || 'Full';
-    }
-
-    console.log(`Creating intelligent schedule: Wake ${wakeTime}, Energy ${energy}, Focus ${focusCapacity}`);
-
-    const tasks = await getTodaysTasks(today);
-    const routineTasks = tasks.filter(t => t.routine || t.priority === 'Routine');
-    console.log(`Found ${tasks.length} tasks total, ${routineTasks.length} routine tasks`);
-
-    const workShift = await getWorkShift(today);
-    console.log(`Work day: ${workShift.isWorkDay}`);
-
-    await clearTodayBlocks(today);
-
-    let schedule = [];
-    
-    if (workShift.isWorkDay) {
-        schedule = createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusCapacity, tasks);
-    } else {
-        schedule = createHomeDaySchedule(wakeTime, tasks, routineTasks, energy, focusCapacity);
-    }
-
-    let successCount = 0;
-    let failedBlocks = [];
-    let calendarEvents = [];
-    
-    for (const block of schedule) {
-        try {
-            const endTime = addMinutes(block.start, block.duration);
-            
-            const startUTC = new Date(`${today}T${block.start}:00.000-07:00`);
-            const endUTC = new Date(`${today}T${endTime}:00.000-07:00`);
-            
-            const timeBlockResponse = await notion.pages.create({
-                parent: { database_id: TIME_BLOCKS_DB_ID },
-                properties: {
-                    Title: { title: [{ text: { content: block.title } }] },
-                    'Block Type': { select: { name: block.type } },
-                    'Energy Requirements': { select: { name: block.energy } },
-                    Status: { select: { name: 'Active' } },
-                    'Start Time': { date: { start: startUTC.toISOString() } },
-                    'End Time': { date: { start: endUTC.toISOString() } }
-                }
-            });
-            
-            successCount++;
-
-            // Create Google Calendar event
-            try {
-                const calendarEvent = await createGoogleCalendarEvent(block, today);
-                if (calendarEvent) {
-                    calendarEvents.push({
-                        blockTitle: block.title,
-                        calendarId: calendarEvent.calendarId,
-                        eventId: calendarEvent.eventId,
-                        status: 'success'
-                    });
-
-                    await notion.pages.update({
+await notion.pages.update({
                         page_id: timeBlockResponse.id,
                         properties: {
                             'GCal ID': { 
@@ -346,7 +53,7 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     console.log('Creating work day schedule with task integration and 30-minute increments');
     
     let schedule = [];
-    let currentTime = wakeTime;
+    let currentTime = wakeTime; // This is now properly in Pacific time
     
     // Separate tasks by type
     const meetings = allTasks.filter(t => t.type === 'meeting' && t.fixedTime);
@@ -403,7 +110,7 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         currentTime = addMinutes(currentTime, 30);
     }
     
-    // WORK DAY BLOCKS with task integration
+    // WORK DAY BLOCKS with task integration - all times still in Pacific
     let workTime = workShift.startTime;
     const workEndTime = workShift.endTime;
     let taskIndex = 0;
@@ -414,7 +121,7 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         
         // Check for fixed-time meetings first
         const meetingAtThisTime = meetings.find(m => {
-            const meetingTime = new Date(m.fixedTime).toTimeString().split(' ')[0].substring(0, 5);
+            const meetingTime = utcToPacificTime(m.fixedTime);
             return meetingTime === workTime;
         });
         
@@ -531,9 +238,9 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         workTime = addMinutes(workTime, 30);
     }
     
-    // Post-work blocks remain the same
+    // Post-work blocks - continuing from work end time
     let postWorkTime = workShift.endTime;
-    const bedTime = '22:00';
+    const bedTime = '22:00'; // Pacific bedtime
     
     while (getMinutesBetween(postWorkTime, bedTime) >= 30) {
         const currentHour = parseInt(postWorkTime.split(':')[0]);
@@ -572,7 +279,7 @@ function createHomeDaySchedule(wakeTime, tasks, routineTasks, energy, focusCapac
     console.log('Creating home day schedule (with family time)');
     
     let schedule = [];
-    let currentTime = wakeTime;
+    let currentTime = wakeTime; // Now properly in Pacific time
     
     schedule.push({
         title: 'Morning Routine & Recovery',
@@ -763,8 +470,9 @@ async function createGoogleCalendarEvent(block, date) {
         const blockTypeKey = block.type.toLowerCase().replace(/\s+/g, '-');
         const calendarId = BLOCK_TYPE_TO_CALENDAR_ID[blockTypeKey] || BLOCK_TYPE_TO_CALENDAR_ID['personal'];
         
-        const startTime = `${date}T${block.start}:00.000-07:00`;
-        const endTime = `${date}T${addMinutes(block.start, block.duration)}:00.000-07:00`;
+        // Convert Pacific times to proper timezone for Google Calendar
+        const startTime = pacificTimeToUTC(date, block.start);
+        const endTime = pacificTimeToUTC(date, addMinutes(block.start, block.duration));
         
         const event = {
             summary: block.title,
@@ -858,13 +566,16 @@ async function getTodaysTasks(today) {
 
 async function clearTodayBlocks(today) {
     try {
+        // Get UTC range that covers the Pacific day
+        const pacificDayRange = getPacificDateRange(today);
+        
         const existing = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
                 property: 'Start Time',
                 date: {
-                    on_or_after: `${today}T00:00:00.000Z`,
-                    on_or_before: `${today}T23:59:59.999Z`
+                    on_or_after: pacificDayRange.start,
+                    on_or_before: pacificDayRange.end
                 }
             },
             page_size: 100
