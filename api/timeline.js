@@ -142,8 +142,9 @@ async function getCurrentSchedule(today) {
             const start = new Date(startTime);
             const end = endTime ? new Date(endTime) : null;
             
-            const startPacific = new Date(start.getTime() - (7 * 60 * 60 * 1000));
-            const endPacific = end ? new Date(end.getTime() - (7 * 60 * 60 * 1000)) : null;
+            // Convert UTC to Pacific time (add 7 hours for PDT)
+            const startPacific = new Date(start.getTime() + (7 * 60 * 60 * 1000));
+            const endPacific = end ? new Date(end.getTime() + (7 * 60 * 60 * 1000)) : null;
 
             const pacificMidnight = new Date(`${today}T00:00:00-07:00`);
             const nextDayMidnight = new Date(`${today}T23:59:59-07:00`);
@@ -223,8 +224,11 @@ async function createIntelligentSchedule(today) {
         const wakeTimeRaw = log['Wake Time']?.date?.start;
         if (wakeTimeRaw) {
             const wake = new Date(wakeTimeRaw);
-            const pacificTime = new Date(wake.getTime() - (7 * 60 * 60 * 1000));
-            wakeTime = `${pacificTime.getUTCHours().toString().padStart(2, '0')}:${pacificTime.getUTCMinutes().toString().padStart(2, '0')}`;
+            // Store wake time in Pacific time directly
+            const pacificHours = wake.getUTCHours() - 7; // Convert UTC to PDT
+            const pacificMinutes = wake.getUTCMinutes();
+            const adjustedHours = pacificHours < 0 ? pacificHours + 24 : pacificHours;
+            wakeTime = `${adjustedHours.toString().padStart(2, '0')}:${pacificMinutes.toString().padStart(2, '0')}`;
         }
         
         energy = log['Energy']?.number || 7;
@@ -247,7 +251,7 @@ async function createIntelligentSchedule(today) {
     let schedule = [];
     
     if (workShift.isWorkDay) {
-        schedule = createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusCapacity);
+        schedule = createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusCapacity, tasks);
     } else {
         schedule = createHomeDaySchedule(wakeTime, tasks, routineTasks, energy, focusCapacity);
     }
@@ -339,11 +343,17 @@ async function createIntelligentSchedule(today) {
     console.log(`Schedule created: ${successCount} blocks, ${calendarEvents.filter(e => e.status === 'success').length} calendar events`);
 }
 
-function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusCapacity) {
-    console.log('Creating work day schedule with 30-minute increments (no family time)');
+function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusCapacity, allTasks) {
+    console.log('Creating work day schedule with task integration and 30-minute increments');
     
     let schedule = [];
     let currentTime = wakeTime;
+    
+    // Separate tasks by type
+    const meetings = allTasks.filter(t => t.type === 'meeting' && t.fixedTime);
+    const priorityTasks = allTasks.filter(t => t.priority === 'High' && t.type !== 'meeting');
+    const normalTasks = allTasks.filter(t => t.priority === 'Medium' && !t.routine && t.type !== 'meeting');
+    const availableRoutineTasks = [...routineTasks];
     
     // Pre-work blocks in 30-minute increments
     schedule.push({
@@ -355,15 +365,31 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     });
     currentTime = addMinutes(currentTime, 30);
     
-    // Fill remaining pre-work time with 30-minute blocks
+    // PRIORITY: Routine tasks before 10 AM (but also before work starts)
+    while (getMinutesBetween(currentTime, Math.min(timeToMinutes('10:00'), timeToMinutes(workShift.startTime))) >= 30 && availableRoutineTasks.length > 0) {
+        const task = availableRoutineTasks.shift();
+        schedule.push({
+            title: task.title,
+            start: currentTime,
+            duration: 30,
+            type: 'Routine',
+            energy: 'Medium',
+            taskId: task.id
+        });
+        currentTime = addMinutes(currentTime, 30);
+    }
+    
+    // Fill remaining pre-work time
     while (getMinutesBetween(currentTime, workShift.startTime) >= 30) {
-        if (routineTasks.length > 0) {
+        if (priorityTasks.length > 0) {
+            const task = priorityTasks.shift();
             schedule.push({
-                title: 'Routine Tasks',
+                title: task.title,
                 start: currentTime,
                 duration: 30,
-                type: 'Routine',
-                energy: 'Medium'
+                type: task.type.charAt(0).toUpperCase() + task.type.slice(1),
+                energy: 'Medium',
+                taskId: task.id
             });
         } else {
             schedule.push({
@@ -377,17 +403,73 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         currentTime = addMinutes(currentTime, 30);
     }
     
-    // WORK DAY BLOCKS - 30-minute increments during work hours
+    // WORK DAY BLOCKS with task integration
     let workTime = workShift.startTime;
     const workEndTime = workShift.endTime;
+    let taskIndex = 0;
+    const workTasks = [...priorityTasks, ...normalTasks];
     
     while (getMinutesBetween(workTime, workEndTime) >= 30) {
         const currentHour = parseInt(workTime.split(':')[0]);
-        const remainingWorkMinutes = getMinutesBetween(workTime, workEndTime);
+        
+        // Check for fixed-time meetings first
+        const meetingAtThisTime = meetings.find(m => {
+            const meetingTime = new Date(m.fixedTime).toTimeString().split(' ')[0].substring(0, 5);
+            return meetingTime === workTime;
+        });
+        
+        if (meetingAtThisTime) {
+            const duration = meetingAtThisTime.estimatedTime || 30;
+            schedule.push({
+                title: meetingAtThisTime.title,
+                start: workTime,
+                duration: duration,
+                type: 'Meeting',
+                energy: 'Medium',
+                taskId: meetingAtThisTime.id,
+                fixedTime: true
+            });
+            workTime = addMinutes(workTime, duration);
+            continue;
+        }
+        
+        // Continue with remaining routine tasks before 10 AM
+        if (currentHour < 10 && availableRoutineTasks.length > 0) {
+            const task = availableRoutineTasks.shift();
+            schedule.push({
+                title: task.title,
+                start: workTime,
+                duration: 30,
+                type: 'Routine',
+                energy: 'Medium',
+                taskId: task.id
+            });
+            workTime = addMinutes(workTime, 30);
+            continue;
+        }
         
         let blockType, blockTitle, blockEnergy;
         
-        // Morning work (5:30-9:00): High energy tasks
+        // Use actual tasks if available
+        if (workTasks.length > 0 && taskIndex < workTasks.length) {
+            const task = workTasks[taskIndex];
+            blockTitle = task.title;
+            blockType = task.type.charAt(0).toUpperCase() + task.type.slice(1);
+            blockEnergy = task.priority === 'High' ? 'High' : 'Medium';
+            schedule.push({
+                title: blockTitle,
+                start: workTime,
+                duration: task.estimatedTime || 30,
+                type: blockType,
+                energy: blockEnergy,
+                taskId: task.id
+            });
+            workTime = addMinutes(workTime, task.estimatedTime || 30);
+            taskIndex++;
+            continue;
+        }
+        
+        // No tasks - create appropriate work blocks based on time and energy
         if (currentHour >= 5 && currentHour < 9) {
             if (energy >= 8 && focusCapacity === 'Sharp') {
                 blockType = 'Deep Work';
@@ -402,9 +484,7 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 blockTitle = 'Admin Tasks';
                 blockEnergy = 'Medium';
             }
-        }
-        // Mid-morning (9:00-12:00): Productive work
-        else if (currentHour >= 9 && currentHour < 12) {
+        } else if (currentHour >= 9 && currentHour < 12) {
             if (energy >= 7) {
                 blockType = 'Deep Work';
                 blockTitle = 'Deep Work Block';
@@ -414,15 +494,11 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 blockTitle = 'Project Work';
                 blockEnergy = 'Medium';
             }
-        }
-        // Lunch time
-        else if (currentHour === 12 && workTime === '12:00') {
+        } else if (currentHour === 12 && workTime === '12:00') {
             blockType = 'Break';
             blockTitle = 'Lunch Break';
             blockEnergy = 'Low';
-        }
-        // Early afternoon (13:00-15:00): Steady work
-        else if (currentHour >= 13 && currentHour < 15) {
+        } else if (currentHour >= 13 && currentHour < 15) {
             if (energy >= 6) {
                 blockType = 'Creative';
                 blockTitle = 'Creative Work';
@@ -432,9 +508,7 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 blockTitle = 'Admin & Communications';
                 blockEnergy = 'Medium';
             }
-        }
-        // Late afternoon (15:00-17:30): Lower energy tasks
-        else {
+        } else {
             if (energy >= 5) {
                 blockType = 'Admin';
                 blockTitle = 'Admin & Wrap-up';
@@ -457,11 +531,9 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         workTime = addMinutes(workTime, 30);
     }
     
-    // Post-work blocks in 30-minute increments
+    // Post-work blocks remain the same
     let postWorkTime = workShift.endTime;
-    
-    // Fill evening until bedtime with 30-minute blocks
-    const bedTime = '22:00'; // Reasonable bedtime for 4:45 wake
+    const bedTime = '22:00';
     
     while (getMinutesBetween(postWorkTime, bedTime) >= 30) {
         const currentHour = parseInt(postWorkTime.split(':')[0]);
@@ -469,17 +541,14 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         let blockTitle, blockType, blockEnergy;
         
         if (currentHour >= 17 && currentHour < 19) {
-            // Early evening - decompress
             blockTitle = currentHour === 17 ? 'Post-Work Decompress' : 'Recovery Time';
             blockType = 'Break';
             blockEnergy = 'Low';
         } else if (currentHour >= 19 && currentHour < 21) {
-            // Evening - personal time
             blockTitle = 'Personal Time & Recovery';
             blockType = 'Personal';
             blockEnergy = 'Low';
         } else {
-            // Late evening - wind down
             blockTitle = 'Wind Down & Sleep Prep';
             blockType = 'Personal';
             blockEnergy = 'Low';
@@ -765,6 +834,7 @@ async function getTodaysTasks(today) {
             const type = props.Type?.select?.name || 'Admin';
             const estimatedTime = props['Estimated Duration']?.number || 30;
             const autoSchedule = props['Auto-Schedule']?.checkbox || false;
+            const fixedTime = props['Fixed Time']?.date?.start;
             
             const routine = priority === 'Routine' || type === 'Routine' || title.toLowerCase().includes('routine');
             
@@ -776,6 +846,7 @@ async function getTodaysTasks(today) {
                 routine,
                 estimatedTime,
                 autoSchedule,
+                fixedTime,
                 id: task.id
             };
         });
@@ -828,4 +899,15 @@ function getMinutesBetween(startTime, endTime) {
     const startTotalMins = startHours * 60 + startMins;
     const endTotalMins = endHours * 60 + endMins;
     return endTotalMins - startTotalMins;
+}
+
+function timeToMinutes(timeStr) {
+    const [hours, mins] = timeStr.split(':').map(Number);
+    return hours * 60 + mins;
+}
+
+function minutesToTime(minutes) {
+    const hours = Math.floor(minutes / 60) % 24;
+    const mins = minutes % 60;
+    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
 }
