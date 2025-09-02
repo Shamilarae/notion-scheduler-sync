@@ -142,20 +142,20 @@ async function getCurrentSchedule(today) {
             const start = new Date(startTime);
             const end = endTime ? new Date(endTime) : null;
             
-            // Convert UTC to Pacific time (add 7 hours for PDT)
-            const startPacific = new Date(start.getTime() + (7 * 60 * 60 * 1000));
-            const endPacific = end ? new Date(end.getTime() + (7 * 60 * 60 * 1000)) : null;
+            // Get local time components directly from the Date object
+            const startLocal = start;
+            const endLocal = end;
 
             const pacificMidnight = new Date(`${today}T00:00:00-07:00`);
             const nextDayMidnight = new Date(`${today}T23:59:59-07:00`);
             
-            if (startPacific < pacificMidnight || startPacific > nextDayMidnight) {
+            if (startLocal < pacificMidnight || startLocal > nextDayMidnight) {
                 return null;
             }
 
             const formattedBlock = {
-                time: `${startPacific.getUTCHours().toString().padStart(2, '0')}:${startPacific.getUTCMinutes().toString().padStart(2, '0')}`,
-                endTime: endPacific ? `${endPacific.getUTCHours().toString().padStart(2, '0')}:${endPacific.getUTCMinutes().toString().padStart(2, '0')}` : '',
+                time: `${startLocal.getHours().toString().padStart(2, '0')}:${startLocal.getMinutes().toString().padStart(2, '0')}`,
+                endTime: endLocal ? `${endLocal.getHours().toString().padStart(2, '0')}:${endLocal.getMinutes().toString().padStart(2, '0')}` : '',
                 title,
                 type: blockType.toLowerCase().replace(/\s+/g, '-'),
                 energy: energy.toLowerCase(),
@@ -224,11 +224,10 @@ async function createIntelligentSchedule(today) {
         const wakeTimeRaw = log['Wake Time']?.date?.start;
         if (wakeTimeRaw) {
             const wake = new Date(wakeTimeRaw);
-            // Store wake time in Pacific time directly
-            const pacificHours = wake.getUTCHours() - 7; // Convert UTC to PDT
-            const pacificMinutes = wake.getUTCMinutes();
-            const adjustedHours = pacificHours < 0 ? pacificHours + 24 : pacificHours;
-            wakeTime = `${adjustedHours.toString().padStart(2, '0')}:${pacificMinutes.toString().padStart(2, '0')}`;
+            // Get the local time components directly from the Date object
+            const hours = wake.getHours();
+            const minutes = wake.getMinutes();
+            wakeTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
         }
         
         energy = log['Energy']?.number || 7;
