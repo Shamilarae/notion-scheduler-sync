@@ -340,11 +340,12 @@ async function createIntelligentSchedule(today) {
 }
 
 function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusCapacity) {
-    console.log('Creating work day schedule (no family time)');
+    console.log('Creating work day schedule with 30-minute increments (no family time)');
     
     let schedule = [];
     let currentTime = wakeTime;
     
+    // Pre-work blocks in 30-minute increments
     schedule.push({
         title: 'Morning Routine (Work Camp)',
         start: currentTime,
@@ -354,56 +355,146 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     });
     currentTime = addMinutes(currentTime, 30);
     
-    if (routineTasks.length > 0 && getMinutesBetween(currentTime, '05:30') >= 30) {
-        const availableTime = Math.min(getMinutesBetween(currentTime, '05:30'), routineTasks.length * 15);
-        schedule.push({
-            title: `Quick Routine Tasks (${routineTasks.length})`,
-            start: currentTime,
-            duration: availableTime,
-            type: 'Routine',
-            energy: 'Medium'
-        });
-        currentTime = addMinutes(currentTime, availableTime);
-    } else {
-        const preWorkTime = getMinutesBetween(currentTime, '05:30');
-        if (preWorkTime >= 15) {
+    // Fill remaining pre-work time with 30-minute blocks
+    while (getMinutesBetween(currentTime, workShift.startTime) >= 30) {
+        if (routineTasks.length > 0) {
+            schedule.push({
+                title: 'Routine Tasks',
+                start: currentTime,
+                duration: 30,
+                type: 'Routine',
+                energy: 'Medium'
+            });
+        } else {
             schedule.push({
                 title: 'Work Prep & Planning',
                 start: currentTime,
-                duration: preWorkTime,
+                duration: 30,
                 type: 'Admin',
                 energy: 'Medium'
             });
         }
+        currentTime = addMinutes(currentTime, 30);
     }
     
-    let postWorkTime = addMinutes(workShift.endTime, 0);
+    // WORK DAY BLOCKS - 30-minute increments during work hours
+    let workTime = workShift.startTime;
+    const workEndTime = workShift.endTime;
     
-    schedule.push({
-        title: 'Post-Work Decompress',
-        start: postWorkTime,
-        duration: 60,
-        type: 'Break',
-        energy: 'Low'
-    });
-    postWorkTime = addMinutes(postWorkTime, 60);
+    while (getMinutesBetween(workTime, workEndTime) >= 30) {
+        const currentHour = parseInt(workTime.split(':')[0]);
+        const remainingWorkMinutes = getMinutesBetween(workTime, workEndTime);
+        
+        let blockType, blockTitle, blockEnergy;
+        
+        // Morning work (5:30-9:00): High energy tasks
+        if (currentHour >= 5 && currentHour < 9) {
+            if (energy >= 8 && focusCapacity === 'Sharp') {
+                blockType = 'Deep Work';
+                blockTitle = 'Deep Focus Work';
+                blockEnergy = 'High';
+            } else if (energy >= 6) {
+                blockType = 'Creative';
+                blockTitle = 'Creative/Project Work';
+                blockEnergy = 'Medium';
+            } else {
+                blockType = 'Admin';
+                blockTitle = 'Admin Tasks';
+                blockEnergy = 'Medium';
+            }
+        }
+        // Mid-morning (9:00-12:00): Productive work
+        else if (currentHour >= 9 && currentHour < 12) {
+            if (energy >= 7) {
+                blockType = 'Deep Work';
+                blockTitle = 'Deep Work Block';
+                blockEnergy = 'High';
+            } else {
+                blockType = 'Creative';
+                blockTitle = 'Project Work';
+                blockEnergy = 'Medium';
+            }
+        }
+        // Lunch time
+        else if (currentHour === 12 && workTime === '12:00') {
+            blockType = 'Break';
+            blockTitle = 'Lunch Break';
+            blockEnergy = 'Low';
+        }
+        // Early afternoon (13:00-15:00): Steady work
+        else if (currentHour >= 13 && currentHour < 15) {
+            if (energy >= 6) {
+                blockType = 'Creative';
+                blockTitle = 'Creative Work';
+                blockEnergy = 'Medium';
+            } else {
+                blockType = 'Admin';
+                blockTitle = 'Admin & Communications';
+                blockEnergy = 'Medium';
+            }
+        }
+        // Late afternoon (15:00-17:30): Lower energy tasks
+        else {
+            if (energy >= 5) {
+                blockType = 'Admin';
+                blockTitle = 'Admin & Wrap-up';
+                blockEnergy = 'Medium';
+            } else {
+                blockType = 'Admin';
+                blockTitle = 'Light Admin Tasks';
+                blockEnergy = 'Low';
+            }
+        }
+        
+        schedule.push({
+            title: blockTitle,
+            start: workTime,
+            duration: 30,
+            type: blockType,
+            energy: blockEnergy
+        });
+        
+        workTime = addMinutes(workTime, 30);
+    }
     
-    schedule.push({
-        title: 'Personal Time & Recovery',
-        start: postWorkTime,
-        duration: 120,
-        type: 'Personal',
-        energy: 'Low'
-    });
-    postWorkTime = addMinutes(postWorkTime, 120);
+    // Post-work blocks in 30-minute increments
+    let postWorkTime = workShift.endTime;
     
-    schedule.push({
-        title: 'Wind Down & Sleep Prep',
-        start: postWorkTime,
-        duration: 90,
-        type: 'Personal',
-        energy: 'Low'
-    });
+    // Fill evening until bedtime with 30-minute blocks
+    const bedTime = '22:00'; // Reasonable bedtime for 4:45 wake
+    
+    while (getMinutesBetween(postWorkTime, bedTime) >= 30) {
+        const currentHour = parseInt(postWorkTime.split(':')[0]);
+        
+        let blockTitle, blockType, blockEnergy;
+        
+        if (currentHour >= 17 && currentHour < 19) {
+            // Early evening - decompress
+            blockTitle = currentHour === 17 ? 'Post-Work Decompress' : 'Recovery Time';
+            blockType = 'Break';
+            blockEnergy = 'Low';
+        } else if (currentHour >= 19 && currentHour < 21) {
+            // Evening - personal time
+            blockTitle = 'Personal Time & Recovery';
+            blockType = 'Personal';
+            blockEnergy = 'Low';
+        } else {
+            // Late evening - wind down
+            blockTitle = 'Wind Down & Sleep Prep';
+            blockType = 'Personal';
+            blockEnergy = 'Low';
+        }
+        
+        schedule.push({
+            title: blockTitle,
+            start: postWorkTime,
+            duration: 30,
+            type: blockType,
+            energy: blockEnergy
+        });
+        
+        postWorkTime = addMinutes(postWorkTime, 30);
+    }
     
     return schedule;
 }
