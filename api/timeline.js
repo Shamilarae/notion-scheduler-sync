@@ -1,4 +1,394 @@
-const { Client } = require('@notionhq/client');
+return timeToMinutes(timeStr) + minutes;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 🔄 TWO-WAY SYNC FUNCTIONALITY
+// ═══════════════════════════════════════════════════════════════════
+
+async function performTwoWaySync(date) {
+    console.log('🔄 Starting two-way calendar sync...');
+    
+    try {
+        // Step 1: Sync Google Calendar events to Notion (missing time blocks)
+        const gcalToNotionResult = await syncGoogleCalendarToNotion(date);
+        
+        // Step 2: Sync Notion time blocks to Google Calendar (missing events)
+        const notionToGcalResult = await syncNotionToGoogleCalendar(date);
+        
+        // Step 3: Update existing items where modifications detected
+        const updateResult = await syncModifiedItems(date);
+        
+        return {
+            googleToNotion: gcalToNotionResult,
+            notionToGoogle: notionToGcalResult,
+            updates: updateResult,
+            timestamp: new Date().toISOString()
+        };
+        
+    } catch (error) {
+        console.error('Two-way sync failed:', error);
+        return {
+            error: error.message,
+            timestamp: new Date().toISOString()
+        };
+    }
+}
+
+async function syncGoogleCalendarToNotion(date) {
+    console.log('📅→📝 Syncing Google Calendar events to Notion...');
+    
+    let createdBlocks = 0;
+    let skippedEvents = 0;
+    const errors = [];
+    
+    try {
+        // Check all relevant calendars for new events
+        for (const [blockType, calendarId] of Object.entries(BLOCK_TYPE_TO_CALENDAR_ID)) {
+            try {
+                const events = await calendar.events.list({
+                    calendarId: calendarId,
+                    timeMin: `${date}T00:00:00-07:00`,
+                    timeMax: `${date}T23:59:59-07:00`,
+                    singleEvents: true,
+                    orderBy: 'startTime'
+                });
+                
+                for (const event of events.data.items || []) {
+                    // Skip if this event already has a corresponding Notion block
+                    const existingBlock = await findNotionBlockByGcalId(event.id);
+                    if (existingBlock) {
+                        skippedEvents++;
+                        continue;
+                    }
+                    
+                    // Skip all-day events or events without proper time
+                    if (!event.start?.dateTime || !event.end?.dateTime) {
+                        skippedEvents++;
+                        continue;
+                    }
+                    
+                    // Create Notion time block from calendar event
+                    const startTime = new Date(event.start.dateTime);
+                    const endTime = new Date(event.end.dateTime);
+                    
+                    await notion.pages.create({
+                        parent: { database_id: TIME_BLOCKS_DB_ID },
+                        properties: {
+                            Title: { 
+                                title: [{ 
+                                    text: { 
+                                        content: event.summary || 'Untitled Event' 
+                                    } 
+                                }] 
+                            },
+                            'Block Type': { 
+                                select: { 
+                                    name: capitalizeBlockType(blockType) 
+                                } 
+                            },
+                            'Energy Requirements': { 
+                                select: { 
+                                    name: 'Medium' 
+                                } 
+                            },
+                            Status: { 
+                                select: { 
+                                    name: 'Active' 
+                                } 
+                            },
+                            'Start Time': { 
+                                date: { 
+                                    start: startTime.toISOString() 
+                                } 
+                            },
+                            'End Time': { 
+                                date: { 
+                                    start: endTime.toISOString() 
+                                } 
+                            },
+                            'GCal ID': {
+                                rich_text: [{
+                                    text: {
+                                        content: event.id
+                                    }
+                                }]
+                            }
+                        }
+                    });
+                    
+                    createdBlocks++;
+                    console.log(`✅ Created Notion block for: ${event.summary}`);
+                }
+                
+            } catch (error) {
+                console.error(`Error syncing calendar ${calendarId}:`, error.message);
+                errors.push({ calendarId, error: error.message });
+            }
+        }
+        
+        return {
+            success: true,
+            updated: updatedItems,
+            errors: errors
+        };
+        
+    } catch (error) {
+        console.error('Modified items sync failed:', error);
+        return {
+            success: false,
+            error: error.message,
+            updated: updatedItems
+        };
+    }
+}
+
+async function findNotionBlockByGcalId(gcalId) {
+    try {
+        const response = await notion.databases.query({
+            database_id: TIME_BLOCKS_DB_ID,
+            filter: {
+                property: 'GCal ID',
+                rich_text: {
+                    equals: gcalId
+                }
+            }
+        });
+        
+        return response.results.length > 0 ? response.results[0] : null;
+    } catch (error) {
+        console.error('Error finding Notion block:', error);
+        return null;
+    }
+}
+
+function capitalizeBlockType(blockType) {
+    const typeMap = {
+        'deep-work': 'Deep Work',
+        'creative': 'Creative',
+        'admin': 'Admin',
+        'meeting': 'Meeting',
+        'riley-time': 'Riley Time',
+        'personal': 'Personal',
+        'break': 'Break',
+        'routine': 'Routine'
+    };
+    return typeMap[blockType] || blockType.charAt(0).toUpperCase() + blockType.slice(1);
+}
+            created: createdBlocks,
+            skipped: skippedEvents,
+            errors: errors
+        };
+        
+    } catch (error) {
+        console.error('Google Calendar to Notion sync failed:', error);
+        return {
+            success: false,
+            error: error.message,
+            created: createdBlocks,
+            skipped: skippedEvents
+        };
+    }
+}
+
+async function syncNotionToGoogleCalendar(date) {
+    console.log('📝→📅 Syncing Notion blocks to Google Calendar...');
+    
+    let createdEvents = 0;
+    let skippedBlocks = 0;
+    const errors = [];
+    
+    try {
+        // Get all time blocks for the day without GCal IDs
+        const timeBlocks = await notion.databases.query({
+            database_id: TIME_BLOCKS_DB_ID,
+            filter: {
+                and: [
+                    {
+                        property: 'Start Time',
+                        date: {
+                            on_or_after: `${date}T00:00:00.000Z`,
+                            on_or_before: `${date}T23:59:59.999Z`
+                        }
+                    },
+                    {
+                        or: [
+                            {
+                                property: 'GCal ID',
+                                rich_text: {
+                                    is_empty: true
+                                }
+                            },
+                            {
+                                property: 'GCal ID',
+                                rich_text: {
+                                    equals: ''
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+        
+        for (const block of timeBlocks.results) {
+            try {
+                const title = block.properties.Title?.title[0]?.text?.content || 'Untitled';
+                const blockType = block.properties['Block Type']?.select?.name?.toLowerCase().replace(/\s+/g, '-') || 'personal';
+                const startTime = block.properties['Start Time']?.date?.start;
+                const endTime = block.properties['End Time']?.date?.start;
+                
+                if (!startTime || !endTime) {
+                    skippedBlocks++;
+                    continue;
+                }
+                
+                // Skip work blocks - externally managed
+                if (blockType === 'work') {
+                    skippedBlocks++;
+                    continue;
+                }
+                
+                const calendarEvent = await createGoogleCalendarEvent({
+                    title: title,
+                    start: new Date(startTime).toTimeString().split(' ')[0].substring(0, 5),
+                    duration: Math.round((new Date(endTime) - new Date(startTime)) / 60000),
+                    type: blockType,
+                    energy: block.properties['Energy Requirements']?.select?.name || 'Medium'
+                }, date);
+                
+                if (calendarEvent) {
+                    // Update the Notion block with the calendar event ID
+                    await notion.pages.update({
+                        page_id: block.id,
+                        properties: {
+                            'GCal ID': {
+                                rich_text: [{
+                                    text: {
+                                        content: calendarEvent.eventId
+                                    }
+                                }]
+                            }
+                        }
+                    });
+                    
+                    createdEvents++;
+                    console.log(`✅ Created calendar event for: ${title}`);
+                }
+                
+            } catch (error) {
+                console.error(`Error creating calendar event for block:`, error.message);
+                errors.push({ blockTitle: title, error: error.message });
+                skippedBlocks++;
+            }
+        }
+        
+        return {
+            success: true,
+            created: createdEvents,
+            skipped: skippedBlocks,
+            errors: errors
+        };
+        
+    } catch (error) {
+        console.error('Notion to Google Calendar sync failed:', error);
+        return {
+            success: false,
+            error: error.message,
+            created: createdEvents,
+            skipped: skippedBlocks
+        };
+    }
+}
+
+async function syncModifiedItems(date) {
+    console.log('🔄 Checking for modified items to sync...');
+    
+    // This is a simplified version - in a full implementation, you'd track
+    // modification timestamps and sync changes bidirectionally
+    
+    let updatedItems = 0;
+    const errors = [];
+    
+    try {
+        // Get all time blocks with GCal IDs for the day
+        const timeBlocks = await notion.databases.query({
+            database_id: TIME_BLOCKS_DB_ID,
+            filter: {
+                and: [
+                    {
+                        property: 'Start Time',
+                        date: {
+                            on_or_after: `${date}T00:00:00.000Z`,
+                            on_or_before: `${date}T23:59:59.999Z`
+                        }
+                    },
+                    {
+                        property: 'GCal ID',
+                        rich_text: {
+                            is_not_empty: true
+                        }
+                    }
+                ]
+            }
+        });
+        
+        // For each block, check if the corresponding calendar event still exists
+        // and has the same details - if not, update accordingly
+        for (const block of timeBlocks.results) {
+            const gcalId = block.properties['GCal ID']?.rich_text[0]?.text?.content;
+            if (!gcalId) continue;
+            
+            try {
+                // Find which calendar this event belongs to
+                const blockType = block.properties['Block Type']?.select?.name?.toLowerCase().replace(/\s+/g, '-') || 'personal';
+                const calendarId = BLOCK_TYPE_TO_CALENDAR_ID[blockType] || BLOCK_TYPE_TO_CALENDAR_ID['personal'];
+                
+                // Try to get the event from Google Calendar
+                const event = await calendar.events.get({
+                    calendarId: calendarId,
+                    eventId: gcalId
+                });
+                
+                // Compare details and update if necessary
+                const notionTitle = block.properties.Title?.title[0]?.text?.content || '';
+                const gcalTitle = event.data.summary || '';
+                
+                if (notionTitle !== gcalTitle) {
+                    // Title changed in calendar - update Notion
+                    await notion.pages.update({
+                        page_id: block.id,
+                        properties: {
+                            Title: {
+                                title: [{
+                                    text: {
+                                        content: gcalTitle
+                                    }
+                                }]
+                            }
+                        }
+                    });
+                    updatedItems++;
+                    console.log(`✅ Updated Notion block title: ${gcalTitle}`);
+                }
+                
+            } catch (error) {
+                // Event might be deleted - could archive the Notion block
+                if (error.code === 404) {
+                    console.log(`Calendar event ${gcalId} not found - archiving Notion block`);
+                    await notion.pages.update({
+                        page_id: block.id,
+                        archived: true
+                    });
+                    updatedItems++;
+                } else {
+                    errors.push({ gcalId, error: error.message });
+                }
+            }
+        }
+        
+        return {
+            success: true,
+            const { Client } = require('@notionhq/client');
 
 const notion = new Client({
     auth: process.env.NOTION_TOKEN
@@ -68,6 +458,14 @@ module.exports = async function handler(req, res) {
         if (action === 'create') {
             console.log('Creating intelligent schedule with enhanced logic...');
             await createIntelligentSchedule(today);
+        } else if (action === 'sync') {
+            console.log('Performing two-way calendar sync...');
+            const syncResult = await performTwoWaySync(today);
+            return res.status(200).json({
+                message: 'Sync completed',
+                result: syncResult,
+                timestamp: new Date().toISOString()
+            });
         }
 
         const schedule = await getCurrentSchedule(today);
@@ -334,7 +732,7 @@ async function createIntelligentSchedule(today) {
                         status: 'success'
                     });
 
-                    // Update time block with Google Calendar ID
+                    // Update time block with Google Calendar ID for sync tracking
                     await notion.pages.update({
                         page_id: timeBlockResponse.id,
                         properties: {
@@ -416,31 +814,48 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
             energy: 'Medium'
         });
         currentTime = addMinutes(currentTime, availableTime);
+    } else {
+        // NO TASKS: Fill remaining pre-work time with planning/prep
+        const preWorkTime = getMinutesBetween(currentTime, '05:30');
+        if (preWorkTime >= 15) {
+            schedule.push({
+                title: 'Work Prep & Planning',
+                start: currentTime,
+                duration: preWorkTime,
+                type: 'Admin',
+                energy: 'Medium'
+            });
+        }
     }
     
-    // Work shift (external management)
-    schedule.push({
-        title: 'Work Shift (External)',
-        start: workShift.startTime,
-        duration: getMinutesBetween(workShift.startTime, workShift.endTime),
-        type: 'Work',
-        energy: 'High'
-    });
+    // Work shift (external management) - DON'T CREATE TIME BLOCKS FOR THIS
+    // This is managed externally via the work calendar
     
-    // Post-work recovery
+    // Post-work recovery blocks
+    let postWorkTime = addMinutes(workShift.endTime, 0);
+    
     schedule.push({
-        title: 'Post-Work Recovery',
-        start: addMinutes(workShift.endTime, 0),
+        title: 'Post-Work Decompress',
+        start: postWorkTime,
+        duration: 60,
+        type: 'Break',
+        energy: 'Low'
+    });
+    postWorkTime = addMinutes(postWorkTime, 60);
+    
+    schedule.push({
+        title: 'Personal Time & Recovery',
+        start: postWorkTime,
         duration: 120,
         type: 'Personal',
         energy: 'Low'
     });
+    postWorkTime = addMinutes(postWorkTime, 120);
     
-    // Early bedtime for work
     schedule.push({
-        title: 'Early Rest',
-        start: addMinutes(workShift.endTime, 120),
-        duration: 120,
+        title: 'Wind Down & Sleep Prep',
+        start: postWorkTime,
+        duration: 90,
         type: 'Personal',
         energy: 'Low'
     });
@@ -482,27 +897,61 @@ function createHomeDaySchedule(wakeTime, tasks, routineTasks, energy, focusCapac
             priority: 'HIGH'
         });
         currentTime = addMinutes(currentTime, routineDuration);
+    } else {
+        // NO ROUTINE TASKS: Create morning admin block before 10 AM
+        const availableTime = Math.min(getMinutesBetween(currentTime, '10:00'), 90);
+        if (availableTime >= 30) {
+            schedule.push({
+                title: 'Morning Admin & Planning',
+                start: currentTime,
+                duration: availableTime,
+                type: 'Admin',
+                energy: 'Medium'
+            });
+            currentTime = addMinutes(currentTime, availableTime);
+        }
     }
     
-    // Main work blocks based on energy
+    // Main work blocks based on energy - FILL THE DAY WITH PRODUCTIVE BLOCKS
     if (energy >= 8 && focusCapacity === 'Sharp') {
+        // High energy, sharp focus: Deep work blocks
         schedule.push({
-            title: 'Deep Work Block',
+            title: 'Deep Work Block 1',
             start: currentTime,
-            duration: 150, // 2.5 hours
+            duration: 120,
             type: 'Deep Work',
             energy: 'High'
         });
-        currentTime = addMinutes(currentTime, 150);
-    } else if (energy >= 6) {
+        currentTime = addMinutes(currentTime, 120);
+        
         schedule.push({
-            title: 'Creative/Project Work',
+            title: 'Break',
+            start: currentTime,
+            duration: 15,
+            type: 'Break',
+            energy: 'Low'
+        });
+        currentTime = addMinutes(currentTime, 15);
+        
+        schedule.push({
+            title: 'Deep Work Block 2',
             start: currentTime,
             duration: 90,
+            type: 'Deep Work',
+            energy: 'High'
+        });
+        currentTime = addMinutes(currentTime, 90);
+        
+    } else if (energy >= 6) {
+        // Medium-high energy: Creative work focus
+        schedule.push({
+            title: 'Creative/Project Work Block',
+            start: currentTime,
+            duration: 120,
             type: 'Creative',
             energy: energy >= 7 ? 'High' : 'Medium'
         });
-        currentTime = addMinutes(currentTime, 90);
+        currentTime = addMinutes(currentTime, 120);
         
         schedule.push({
             title: 'Admin Tasks',
@@ -512,16 +961,37 @@ function createHomeDaySchedule(wakeTime, tasks, routineTasks, energy, focusCapac
             energy: 'Medium'
         });
         currentTime = addMinutes(currentTime, 60);
-    } else {
-        // Low energy - light tasks only
+        
+    } else if (energy >= 4) {
+        // Lower energy: Admin and light creative work
         schedule.push({
-            title: 'Light Admin Work',
+            title: 'Admin Tasks Block',
             start: currentTime,
             duration: 90,
             type: 'Admin',
-            energy: 'Low'
+            energy: 'Medium'
         });
         currentTime = addMinutes(currentTime, 90);
+        
+        schedule.push({
+            title: 'Light Creative Work',
+            start: currentTime,
+            duration: 60,
+            type: 'Creative',
+            energy: 'Low'
+        });
+        currentTime = addMinutes(currentTime, 60);
+        
+    } else {
+        // Very low energy: Light admin only
+        schedule.push({
+            title: 'Light Admin & Organization',
+            start: currentTime,
+            duration: 120,
+            type: 'Admin',
+            energy: 'Low'
+        });
+        currentTime = addMinutes(currentTime, 120);
     }
     
     // Lunch break
@@ -537,6 +1007,27 @@ function createHomeDaySchedule(wakeTime, tasks, routineTasks, energy, focusCapac
         energy: 'Low'
     });
     currentTime = addMinutes(currentTime, 60);
+    
+    // Afternoon productive block
+    if (energy >= 6) {
+        schedule.push({
+            title: 'Afternoon Project Work',
+            start: currentTime,
+            duration: 90,
+            type: 'Creative',
+            energy: 'Medium'
+        });
+        currentTime = addMinutes(currentTime, 90);
+    } else {
+        schedule.push({
+            title: 'Afternoon Admin',
+            start: currentTime,
+            duration: 60,
+            type: 'Admin',
+            energy: 'Low'
+        });
+        currentTime = addMinutes(currentTime, 60);
+    }
     
     // Riley time - CRITICAL: Respect school schedule
     if (isSchoolDay) {
@@ -564,9 +1055,27 @@ function createHomeDaySchedule(wakeTime, tasks, routineTasks, energy, focusCapac
     
     // Evening personal time
     schedule.push({
-        title: 'Personal & Family Time',
+        title: 'Dinner & Family Time',
         start: currentTime,
-        duration: 120,
+        duration: 90,
+        type: 'Personal',
+        energy: 'Low'
+    });
+    currentTime = addMinutes(currentTime, 90);
+    
+    schedule.push({
+        title: 'Evening Personal Time',
+        start: currentTime,
+        duration: 60,
+        type: 'Personal',
+        energy: 'Low'
+    });
+    currentTime = addMinutes(currentTime, 60);
+    
+    schedule.push({
+        title: 'Wind Down & Sleep Prep',
+        start: currentTime,
+        duration: 60,
         type: 'Personal',
         energy: 'Low'
     });
