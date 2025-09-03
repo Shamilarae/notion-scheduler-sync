@@ -508,28 +508,35 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         }
         
         // No tasks - create appropriate work blocks based on time and energy
+        // Fixed: Prime morning hours (5-9 AM) should get highest energy work
         if (currentHour >= 5 && currentHour < 9) {
-            if (energy >= 8 && focusCapacity === 'Sharp') {
+            // Morning peak: Lower threshold for high-energy work
+            if (energy >= 7 && focusCapacity === 'Sharp') {
                 blockType = 'Deep Work';
-                blockTitle = 'Deep Focus Work';
+                blockTitle = 'Deep Focus Work (Prime Hours)';
                 blockEnergy = 'High';
             } else if (energy >= 6) {
-                blockType = 'Creative';
-                blockTitle = 'Creative/Project Work';
-                blockEnergy = 'Medium';
-            } else {
-                blockType = 'Admin';
-                blockTitle = 'Admin Tasks';
-                blockEnergy = 'Medium';
-            }
-        } else if (currentHour >= 9 && currentHour < 12) {
-            if (energy >= 7) {
                 blockType = 'Deep Work';
                 blockTitle = 'Deep Work Block';
                 blockEnergy = 'High';
             } else {
                 blockType = 'Creative';
-                blockTitle = 'Project Work';
+                blockTitle = 'Creative/Project Work';
+                blockEnergy = 'Medium';
+            }
+        } else if (currentHour >= 9 && currentHour < 12) {
+            // Mid-morning: Slightly higher threshold
+            if (energy >= 8 && focusCapacity === 'Sharp') {
+                blockType = 'Deep Work';
+                blockTitle = 'Deep Work Block';
+                blockEnergy = 'High';
+            } else if (energy >= 7) {
+                blockType = 'Creative';
+                blockTitle = 'Creative/Project Work';
+                blockEnergy = 'Medium';
+            } else {
+                blockType = 'Admin';
+                blockTitle = 'Admin & Communications';
                 blockEnergy = 'Medium';
             }
         } else if (currentHour === 12 && workTime === '12:00') {
@@ -537,7 +544,8 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
             blockTitle = 'Lunch Break';
             blockEnergy = 'Low';
         } else if (currentHour >= 13 && currentHour < 15) {
-            if (energy >= 6) {
+            // Post-lunch energy dip
+            if (energy >= 7) {
                 blockType = 'Creative';
                 blockTitle = 'Creative Work';
                 blockEnergy = 'Medium';
@@ -547,7 +555,8 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 blockEnergy = 'Medium';
             }
         } else {
-            if (energy >= 5) {
+            // Afternoon wind-down
+            if (energy >= 6) {
                 blockType = 'Admin';
                 blockTitle = 'Admin & Wrap-up';
                 blockEnergy = 'Medium';
@@ -558,15 +567,56 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
             }
         }
         
-        schedule.push({
-            title: blockTitle,
-            start: workTime,
-            duration: 30,
-            type: blockType,
-            energy: blockEnergy
-        });
-        
-        workTime = addMinutes(workTime, 30);
+        // Add mandatory breaks every 2 hours of continuous work
+        const minutesSinceLastBreak = getTimeSinceLastBreak(schedule, workTime);
+        if (minutesSinceLastBreak >= 120 && blockType !== 'Break') {
+            schedule.push({
+                title: 'Energy Break (15 min)',
+                start: workTime,
+                duration: 15,
+                type: 'Break',
+                energy: 'Low'
+            });
+            workTime = addMinutes(workTime, 15);
+            
+            // Reduce the main block duration to account for break
+            schedule.push({
+                title: blockTitle,
+                start: workTime,
+                duration: 15,
+                type: blockType,
+                energy: blockEnergy
+            });
+            workTime = addMinutes(workTime, 15);
+        } else if (blockEnergy === 'High' && getLastBlockType(schedule) === 'Deep Work') {
+            // Add micro-break between consecutive high-energy blocks
+            schedule.push({
+                title: 'Micro Break (5 min)',
+                start: workTime,
+                duration: 5,
+                type: 'Break',
+                energy: 'Low'
+            });
+            workTime = addMinutes(workTime, 5);
+            
+            schedule.push({
+                title: blockTitle,
+                start: workTime,
+                duration: 25,
+                type: blockType,
+                energy: blockEnergy
+            });
+            workTime = addMinutes(workTime, 25);
+        } else {
+            schedule.push({
+                title: blockTitle,
+                start: workTime,
+                duration: 30,
+                type: blockType,
+                energy: blockEnergy
+            });
+            workTime = addMinutes(workTime, 30);
+        }
     }
     
     // Post-work blocks - continuing from work end time
