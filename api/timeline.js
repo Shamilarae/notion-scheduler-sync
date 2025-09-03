@@ -953,3 +953,21 @@ function minutesToTime(minutes) {
     const mins = minutes % 60;
     return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
 }
+
+// Helper functions for break management
+function getTimeSinceLastBreak(schedule, currentTime) {
+    // Find the last break in the schedule
+    for (let i = schedule.length - 1; i >= 0; i--) {
+        if (schedule[i].type === 'Break') {
+            const lastBreakEnd = addMinutes(schedule[i].start, schedule[i].duration);
+            return getMinutesBetween(lastBreakEnd, currentTime);
+        }
+    }
+    // If no break found, return time since start of work blocks
+    return getMinutesBetween('05:30', currentTime);
+}
+
+function getLastBlockType(schedule) {
+    if (schedule.length === 0) return null;
+    return schedule[schedule.length - 1].type;
+}
