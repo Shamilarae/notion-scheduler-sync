@@ -885,22 +885,29 @@ async function runEnhancedScheduler(today) {
         // Step 4: Check work schedule
         const workShift = await getWorkShift(today);
         
-        // Step 5: Generate schedule using fixed logic
+        // Step 5: Get tasks for today
+        const allTasks = await getTodaysTasks(today);
+        const routineTasks = allTasks.filter(t => t.routine);
+        const projectTasks = allTasks.filter(t => !t.routine);
+        
+        console.log(`📋 Found ${allTasks.length} tasks (${routineTasks.length} routine, ${projectTasks.length} projects)`);
+        
+        // Step 6: Generate schedule using task-driven logic
         let schedule;
         if (workShift.isWorkDay) {
             schedule = createWorkDaySchedule(
                 morningData.wakeTime, 
                 workShift, 
-                [], // routine tasks - simplified for now
+                routineTasks,
                 morningData.energy, 
                 morningData.focusCapacity, 
-                [] // all tasks - simplified for now
+                projectTasks
             );
         } else {
             schedule = createHomeDaySchedule(
                 morningData.wakeTime, 
-                [], // tasks - simplified for now
-                [], // routine tasks - simplified for now
+                projectTasks,
+                routineTasks,
                 morningData.energy, 
                 morningData.focusCapacity
             );
