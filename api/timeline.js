@@ -1,6 +1,5 @@
 const { Client } = require('@notionhq/client');
 
-// Initialize Notion client with error handling
 let notion;
 try {
     notion = new Client({ auth: process.env.NOTION_TOKEN });
@@ -9,12 +8,11 @@ try {
     throw new Error('NOTION_TOKEN is required');
 }
 
-// Database constants
 const TIME_BLOCKS_DB_ID = '2569f86b4f8e80439779e754eca8a066';
 const DAILY_LOGS_DB_ID = '2199f86b4f8e804e95f3c51884cff51a';
 const TASKS_DB_ID = '2169f86b4f8e802ab206f730a174b72b';
 
-// Google Calendar integration with graceful fallback
+// Google Calendar integration
 let calendar = null;
 let calendarEnabled = false;
 
@@ -44,7 +42,7 @@ try {
     console.log('📅 Continuing with Notion-only scheduling');
 }
 
-// FIXED: Proper calendar routing using Shamila's exact mapping
+// Calendar routing
 const CONTEXT_TYPE_TO_CALENDAR_ID = {
     "Personal-Events": "shamilarae@gmail.com",
     "Personal-Admin": "ba46fd78742e193e5c80d2a0ce5cf83751fe66c8b3ac6433c5ad2eb3947295c8@group.calendar.google.com",
@@ -58,25 +56,10 @@ const CONTEXT_TYPE_TO_CALENDAR_ID = {
 };
 
 // All calendar IDs for import scanning
-const ALL_CALENDAR_IDS = [
-    "shamilarae@gmail.com",
-    "ba46fd78742e193e5c80d2a0ce5cf83751fe66c8b3ac6433c5ad2eb3947295c8@group.calendar.google.com",
-    "0nul0g0lvc35c0jto1u5k5o87s@group.calendar.google.com",
-    "family13053487624784455294@group.calendar.google.com",
-    "oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com",
-    "25a2b77c6b27260126cdf6171f6acee428b838e43615a6bbef498d8138047014@group.calendar.google.com",
-    "09b6f8683cb5c58381f1ce55fb75d56f644187db041705dc85cec04d279cb7bb@group.calendar.google.com",
-    "80a0f0cdb416ef47c50563665533e3b83b30a5a9ca513bed4899045c9828b577@group.calendar.google.com",
-    "a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09@group.calendar.google.com"
-];
+const ALL_CALENDAR_IDS = Object.values(CONTEXT_TYPE_TO_CALENDAR_ID);
 
-const WORK_SCHEDULE = {
-    calendarId: 'oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com',
-    startDate: '2025-08-28',
-    endDate: '2025-09-10',
-    dailyStart: '05:30',
-    dailyEnd: '17:30'
-};
+// Work site detection calendar
+const WORK_SITE_CALENDAR_ID = 'oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com';
 
 // UTILITY FUNCTIONS
 function addMinutes(timeStr, minutes) {
@@ -106,44 +89,57 @@ function getMinutesBetween(startTime, endTime) {
         
         const startTotalMins = startHours * 60 + startMins;
         const endTotalMins = endHours * 60 + endMins;
-        return Math.max(0, endTotalMins - startTotalMins);
+        
+        // Simple same-day calculation only
+        if (endTotalMins < startTotalMins) {
+            console.warn(`End time ${endTime} before start time ${startTime} - assuming same day`);
+            return 0;
+        }
+        
+        return endTotalMins - startTotalMins;
     } catch (error) {
         console.error('Error in getMinutesBetween:', error.message);
         return 0;
     }
 }
 
-// Dynamic timezone handling
-function getPacificOffset() {
-    const now = new Date();
-    const january = new Date(now.getFullYear(), 0, 1);
-    const july = new Date(now.getFullYear(), 6, 1);
-    const stdOffset = Math.max(january.getTimezoneOffset(), july.getTimezoneOffset());
-    const currentOffset = now.getTimezoneOffset();
-    const isDST = currentOffset < stdOffset;
-    return isDST ? -7 : -8;
-}
-
+// FIXED: Simple, reliable timezone conversion
 function pacificTimeToUTC(pacificDateStr, pacificTimeStr) {
     try {
-        const pacificOffset = getPacificOffset();
-        const pacificDateTime = new Date(`${pacificDateStr}T${pacificTimeStr}:00.000`);
-        const utcDateTime = new Date(pacificDateTime.getTime() - (pacificOffset * 60 * 60 * 1000));
-        return utcDateTime.toISOString();
+        // Create a proper Pacific timezone date
+        const pacificDateTime = `${pacificDateStr}T${pacificTimeStr}:00-07:00`; // Assume PDT for simplicity
+        const utcDate = new Date(pacificDateTime);
+        
+        if (isNaN(utcDate.getTime())) {
+            throw new Error('Invalid date created');
+        }
+        
+        return utcDate.toISOString();
     } catch (error) {
         console.error('Error converting Pacific to UTC:', error.message);
-        return new Date().toISOString();
+        // Fallback: create UTC date directly
+        return new Date(`${pacificDateStr}T${pacificTimeStr}:00.000Z`).toISOString();
     }
 }
 
 function utcToPacificTime(utcDateStr) {
     try {
-        const pacificOffset = getPacificOffset();
         const utcDate = new Date(utcDateStr);
-        const pacificDate = new Date(utcDate.getTime() + (pacificOffset * 60 * 60 * 1000));
-        const hours = pacificDate.getUTCHours();
-        const minutes = pacificDate.getUTCMinutes();
-        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+        
+        if (isNaN(utcDate.getTime())) {
+            throw new Error('Invalid UTC date');
+        }
+        
+        // Convert to Pacific time
+        const pacificOptions = {
+            timeZone: 'America/Vancouver',
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit'
+        };
+        
+        const pacificTimeStr = utcDate.toLocaleTimeString('en-US', pacificOptions);
+        return pacificTimeStr;
     } catch (error) {
         console.error('Error converting UTC to Pacific:', error.message);
         return '09:00';
@@ -151,12 +147,93 @@ function utcToPacificTime(utcDateStr) {
 }
 
 function getPacificDateRange(pacificDateStr) {
-    const pacificStartUTC = pacificTimeToUTC(pacificDateStr, '00:00');
-    const pacificEndUTC = pacificTimeToUTC(pacificDateStr, '23:59');
-    return { start: pacificStartUTC, end: pacificEndUTC };
+    try {
+        // Validate date format
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(pacificDateStr)) {
+            throw new Error('Invalid date format');
+        }
+        
+        const startUTC = pacificTimeToUTC(pacificDateStr, '00:00');
+        const endUTC = pacificTimeToUTC(pacificDateStr, '23:59');
+        return { start: startUTC, end: endUTC };
+    } catch (error) {
+        console.error('Error getting Pacific date range:', error.message);
+        // Fallback to UTC day range
+        const fallbackStart = `${pacificDateStr}T00:00:00.000Z`;
+        const fallbackEnd = `${pacificDateStr}T23:59:59.999Z`;
+        return { start: fallbackStart, end: fallbackEnd };
+    }
 }
 
-// STEP 1: Import existing Google Calendar events
+// FIXED: Simple work detection - if ANY events in work calendar, you're at site
+async function getWorkShift(today) {
+    if (!calendarEnabled) {
+        console.log('📅 Calendar disabled, assuming home day');
+        return { 
+            isWorkDay: false, 
+            isAtSite: false,
+            startTime: '09:00', 
+            endTime: '17:00', 
+            title: 'Home Day',
+            method: 'calendar-disabled'
+        };
+    }
+
+    try {
+        const dayRange = getPacificDateRange(today);
+        
+        console.log(`🔍 Checking work site calendar for ${today}...`);
+        
+        const workEvents = await calendar.events.list({
+            calendarId: WORK_SITE_CALENDAR_ID,
+            timeMin: dayRange.start,
+            timeMax: dayRange.end,
+            singleEvents: true,
+            maxResults: 10
+        });
+
+        const hasWorkEvents = workEvents.data.items && workEvents.data.items.length > 0;
+        
+        if (hasWorkEvents) {
+            console.log(`💼 Found ${workEvents.data.items.length} work site events - at site`);
+            
+            return {
+                isWorkDay: true,
+                isAtSite: true,
+                startTime: '05:30',
+                endTime: '17:30',
+                title: 'Site Work Day',
+                method: 'site-calendar-detected',
+                events: workEvents.data.items.length
+            };
+        } else {
+            console.log('🏠 No work site events found - home day');
+            return {
+                isWorkDay: false,
+                isAtSite: false,
+                startTime: '09:00',
+                endTime: '17:00',
+                title: 'Home Day',
+                method: 'no-site-work'
+            };
+        }
+        
+    } catch (error) {
+        console.error('⚠️ Error checking work site calendar:', error.message);
+        
+        return {
+            isWorkDay: false,
+            isAtSite: false,
+            startTime: '09:00',
+            endTime: '17:00',
+            title: 'Home Day (Error)',
+            method: 'error-fallback',
+            error: error.message
+        };
+    }
+}
+
+// Import existing calendar events
 async function importExistingCalendarEvents(today) {
     if (!calendarEnabled) {
         console.log('📅 Calendar disabled, skipping import');
@@ -168,6 +245,7 @@ async function importExistingCalendarEvents(today) {
     const dayRange = getPacificDateRange(today);
     const importedEvents = [];
     let totalEvents = 0;
+    let failedCalendars = [];
     
     for (const calendarId of ALL_CALENDAR_IDS) {
         try {
@@ -179,7 +257,7 @@ async function importExistingCalendarEvents(today) {
                 timeMax: dayRange.end,
                 singleEvents: true,
                 orderBy: 'startTime',
-                maxResults: 100
+                maxResults: 50
             });
             
             if (events.data.items && events.data.items.length > 0) {
@@ -192,18 +270,24 @@ async function importExistingCalendarEvents(today) {
                         continue;
                     }
                     
-                    // Convert to Pacific time
+                    // Convert to Pacific time for processing
                     const startPacific = utcToPacificTime(event.start.dateTime);
                     const endPacific = utcToPacificTime(event.end.dateTime);
                     
-                    // Determine type and context based on which calendar it came from
+                    // Basic validation - reject suspicious times
+                    const duration = getMinutesBetween(startPacific, endPacific);
+                    if (duration <= 0 || duration > 12 * 60) {
+                        console.log(`⚠️ Skipping event with invalid duration: ${event.summary} (${duration} min)`);
+                        continue;
+                    }
+                    
                     const { type, context } = inferTypeAndContextFromCalendar(calendarId, event.summary || 'Imported Event');
                     
                     const importedEvent = {
                         title: event.summary || 'Imported Event',
                         startTime: startPacific,
                         endTime: endPacific,
-                        duration: getMinutesBetween(startPacific, endPacific),
+                        duration: duration,
                         type: type,
                         context: context,
                         gCalId: event.id,
@@ -216,13 +300,16 @@ async function importExistingCalendarEvents(today) {
                     importedEvents.push(importedEvent);
                     totalEvents++;
                 }
-            } else {
-                console.log(`📅 No events found in this calendar`);
             }
             
         } catch (error) {
-            console.error(`⚠️ Error scanning calendar ${calendarId.substring(0, 20)}: ${error.message}`);
-            // Continue with other calendars even if one fails
+            if (error.code === 403) {
+                console.log(`⚠️ No access to calendar ${calendarId.substring(0, 20)}, skipping`);
+                failedCalendars.push(calendarId);
+            } else {
+                console.error(`⚠️ Error scanning calendar ${calendarId.substring(0, 20)}: ${error.message}`);
+                failedCalendars.push(calendarId);
+            }
         }
     }
     
@@ -233,13 +320,13 @@ async function importExistingCalendarEvents(today) {
         return aMinutes - bMinutes;
     });
     
-    console.log(`📥 Import complete: ${totalEvents} events from ${ALL_CALENDAR_IDS.length} calendars`);
+    console.log(`📥 Import complete: ${totalEvents} events from ${ALL_CALENDAR_IDS.length} calendars (${failedCalendars.length} failed)`);
     return importedEvents;
 }
 
-// Helper function to infer type/context from calendar source
+// Infer type/context from calendar source
 function inferTypeAndContextFromCalendar(calendarId, eventTitle) {
-    const eventTitleLower = eventTitle.toLowerCase();
+    const eventTitleLower = (eventTitle || '').toLowerCase();
     
     // Check each mapping to see which calendar this came from
     for (const [key, id] of Object.entries(CONTEXT_TYPE_TO_CALENDAR_ID)) {
@@ -249,7 +336,7 @@ function inferTypeAndContextFromCalendar(calendarId, eventTitle) {
         }
     }
     
-    // Fallback logic based on calendar ID patterns or event title
+    // Fallback logic
     if (calendarId.includes('family')) {
         return { context: 'Family', type: 'Events' };
     } else if (calendarId === 'shamilarae@gmail.com') {
@@ -262,17 +349,11 @@ function inferTypeAndContextFromCalendar(calendarId, eventTitle) {
         }
     } else {
         // Work calendar fallback
-        if (eventTitleLower.includes('meeting') || eventTitleLower.includes('call')) {
-            return { context: 'Work', type: 'Meeting' };
-        } else if (eventTitleLower.includes('travel') || eventTitleLower.includes('flight')) {
-            return { context: 'Work', type: 'Travel' };
-        } else {
-            return { context: 'Work', type: 'Events' };
-        }
+        return { context: 'Work', type: 'Events' };
     }
 }
 
-// STEP 2: Create imported events as time blocks in Notion (if not already exist)
+// Create imported events as time blocks
 async function createImportedTimeBlocks(importedEvents, today) {
     console.log(`💾 Creating ${importedEvents.length} imported events in Notion...`);
     
@@ -281,7 +362,7 @@ async function createImportedTimeBlocks(importedEvents, today) {
     
     for (const event of importedEvents) {
         try {
-            // Check if this event already exists in Notion (by GCal ID)
+            // Check if this event already exists
             const existingBlock = await checkExistingTimeBlock(event.gCalId);
             
             if (existingBlock) {
@@ -294,7 +375,7 @@ async function createImportedTimeBlocks(importedEvents, today) {
                 continue;
             }
             
-            // Create new time block for imported event
+            // Store times as UTC in Notion
             const startUTC = pacificTimeToUTC(today, event.startTime);
             const endUTC = pacificTimeToUTC(today, event.endTime);
             
@@ -304,8 +385,7 @@ async function createImportedTimeBlocks(importedEvents, today) {
                     Title: { title: [{ text: { content: event.title } }] },
                     Type: { select: { name: event.type } },
                     Context: { select: { name: event.context } },
-                    'Block Type': { select: { name: event.type } }, // Legacy compatibility
-                    'Energy Requirements': { select: { name: 'Medium' } }, // Default for imported
+                    'Energy Requirements': { select: { name: 'Medium' } },
                     Status: { select: { name: 'Active' } },
                     'Start Time': { 
                         date: { 
@@ -320,7 +400,7 @@ async function createImportedTimeBlocks(importedEvents, today) {
                         } 
                     },
                     'GCal ID': { rich_text: [{ text: { content: event.gCalId } }] },
-                    'Auto-Filled': { checkbox: false }, // Imported events are NOT auto-filled
+                    'Auto-Filled': { checkbox: false },
                     Notes: { 
                         rich_text: [{ 
                             text: { 
@@ -358,7 +438,6 @@ async function createImportedTimeBlocks(importedEvents, today) {
     return { created, skipped };
 }
 
-// Helper: Check if time block already exists by GCal ID
 async function checkExistingTimeBlock(gCalId) {
     try {
         const existingBlocks = await notion.databases.query({
@@ -377,7 +456,7 @@ async function checkExistingTimeBlock(gCalId) {
     }
 }
 
-// STEP 3: Get enhanced morning log data
+// Get enhanced morning log data
 async function getEnhancedMorningLog(today) {
     const defaultData = {
         wakeTime: '04:30',
@@ -457,7 +536,7 @@ async function getEnhancedMorningLog(today) {
     }
 }
 
-// STEP 4: Calculate AI adjustments (same robust logic as before)
+// Calculate AI adjustments (same logic as before)
 function calculateAdjustedParameters(morningData) {
     let adjustments = {
         energyMultiplier: 1.0,
@@ -494,7 +573,7 @@ function calculateAdjustedParameters(morningData) {
         adjustments.optimizations.sleep = "Excellent sleep: Enhanced performance";
     }
     
-    // Body status, stress, weather, mood adjustments (same logic as before)
+    // Body status impact
     switch (morningData.bodyStatus) {
         case 'Sick':
             adjustments.energyMultiplier *= 0.3;
@@ -521,6 +600,7 @@ function calculateAdjustedParameters(morningData) {
             adjustments.optimizations.body = "Normal physical state: Standard capacity";
     }
     
+    // Stress level impact
     switch (morningData.stressLevel) {
         case 'Maxed Out':
             adjustments.focusMultiplier *= 0.5;
@@ -545,6 +625,7 @@ function calculateAdjustedParameters(morningData) {
             adjustments.optimizations.stress = "Normal stress level: Standard approach";
     }
     
+    // Mood adjustments
     switch (morningData.mood) {
         case 'Fired Up':
             adjustments.energyMultiplier *= 1.2;
@@ -569,7 +650,7 @@ function calculateAdjustedParameters(morningData) {
             adjustments.optimizations.mood = "Steady mood: Balanced approach";
     }
     
-    // Bounds checking
+    // Bounds checking to prevent extreme values
     adjustments.energyMultiplier = Math.max(0.2, Math.min(1.5, adjustments.energyMultiplier));
     adjustments.focusMultiplier = Math.max(0.2, Math.min(1.5, adjustments.focusMultiplier));
     adjustments.blockDurationMultiplier = Math.max(0.3, Math.min(1.3, adjustments.blockDurationMultiplier));
@@ -582,6 +663,7 @@ function calculateAdjustedParameters(morningData) {
                               morningData.focusCapacity === 'Normal' ? 7 : 4;
     const totalFocusScore = focusCapacityScore * adjustments.focusMultiplier;
     
+    // Compound state analysis
     if (totalEnergyScore >= 9 && totalFocusScore >= 8 && adjustments.deepWorkCapacity >= 1.0) {
         adjustments.optimizations.compound = "🚀 PEAK STATE: All systems optimal for maximum output";
     } else if (totalEnergyScore <= 4 || totalFocusScore <= 3 || adjustments.deepWorkCapacity <= 0.3) {
@@ -599,11 +681,11 @@ function calculateAdjustedParameters(morningData) {
     };
 }
 
-// STEP 5: Generate AI schedule around existing events
+// Generate AI schedule around existing events
 async function generateAIScheduleAroundFixedEvents(existingEvents, morningData, adjustedParams, workShift) {
-    console.log('🧠 Generating AI schedule around existing calendar events...');
+    console.log(`🧠 Generating AI schedule around ${existingEvents.length} existing events...`);
+    console.log(`📍 Work status: ${workShift.title} (At site: ${workShift.isAtSite})`);
     
-    // Sort existing events by time
     const sortedEvents = [...existingEvents].sort((a, b) => {
         const aMinutes = parseInt(a.startTime.split(':')[0]) * 60 + parseInt(a.startTime.split(':')[1]);
         const bMinutes = parseInt(b.startTime.split(':')[0]) * 60 + parseInt(b.startTime.split(':')[1]);
@@ -616,9 +698,9 @@ async function generateAIScheduleAroundFixedEvents(existingEvents, morningData, 
     const isPeakState = adjustedParams.optimizations.compound?.includes('PEAK STATE');
     
     let currentTime = morningData.wakeTime;
-    const endOfDay = '22:00';
+    const endOfDay = workShift.isAtSite ? '20:00' : '22:00'; // Earlier end if at site
     
-    // Add morning routine block first
+    // Morning routine
     const routineDuration = isRecoveryMode ? 90 : (adjustedParams.adjustedEnergy >= 7 ? 45 : 60);
     aiGeneratedBlocks.push({
         title: isRecoveryMode ? 'Extended Recovery Morning' : 
@@ -641,8 +723,7 @@ async function generateAIScheduleAroundFixedEvents(existingEvents, morningData, 
         if (availableMinutes >= 30) {
             console.log(`🕐 Available slot: ${slotStart} to ${slotEnd} (${availableMinutes} min)`);
             
-            // Generate blocks for this time slot
-            const slotsBlocks = generateBlocksForTimeSlot(
+            const slotBlocks = generateBlocksForTimeSlot(
                 slotStart, 
                 slotEnd, 
                 availableMinutes,
@@ -652,7 +733,7 @@ async function generateAIScheduleAroundFixedEvents(existingEvents, morningData, 
                 isPeakState
             );
             
-            aiGeneratedBlocks.push(...slotsBlocks);
+            aiGeneratedBlocks.push(...slotBlocks);
         }
         
         // Update currentTime to end of current event (if exists)
@@ -665,30 +746,25 @@ async function generateAIScheduleAroundFixedEvents(existingEvents, morningData, 
     return aiGeneratedBlocks;
 }
 
-// Helper: Generate blocks for a specific available time slot
+// Generate blocks for a specific available time slot
 function generateBlocksForTimeSlot(slotStart, slotEnd, availableMinutes, adjustedParams, workShift, isRecoveryMode, isPeakState) {
     const blocks = [];
     const maxBlockDuration = adjustedParams.recommendedMaxBlockDuration;
-    const breakInterval = adjustedParams.recommendedBreakInterval;
     
     let currentTime = slotStart;
     const currentHour = parseInt(slotStart.split(':')[0]);
     
-    // Determine if this is work hours
-    const isWorkHours = workShift.isWorkDay && 
-                       currentHour >= parseInt(workShift.startTime.split(':')[0]) && 
-                       currentHour < parseInt(workShift.endTime.split(':')[0]);
-    
     while (getMinutesBetween(currentTime, slotEnd) >= 30) {
         const remainingMinutes = getMinutesBetween(currentTime, slotEnd);
+        if (remainingMinutes <= 0) break; // Safety check
+        
         let blockType, blockTitle, blockContext, blockDuration, blockEnergy;
         
-        // Intelligent block assignment based on time, state, and capacity
+        // Intelligent block assignment based on state and time
         if (isRecoveryMode) {
-            // Recovery mode: gentle tasks only
             blockType = 'Admin';
             blockTitle = 'Light Recovery Tasks';
-            blockContext = isWorkHours ? 'Work' : 'Personal';
+            blockContext = workShift.isAtSite ? 'Personal' : 'Personal';
             blockDuration = Math.min(30, maxBlockDuration, remainingMinutes);
             blockEnergy = 'Low';
             
@@ -698,7 +774,7 @@ function generateBlocksForTimeSlot(slotStart, slotEnd, availableMinutes, adjuste
             blockTitle = isPeakState ? 'Peak Performance Deep Work' : 'Morning Deep Work';
             blockContext = 'Work';
             blockDuration = Math.min(isPeakState ? 90 : maxBlockDuration, remainingMinutes);
-            blockEnergy = adjustedParams.adjustedEnergy >= 8 ? 'High' : 'Medium';
+            blockEnergy = 'High';
             
         } else if (currentHour >= 9 && currentHour < 12 && adjustedParams.adjustedFocus >= 7) {
             // Mid-morning with good focus
@@ -711,7 +787,7 @@ function generateBlocksForTimeSlot(slotStart, slotEnd, availableMinutes, adjuste
             } else {
                 blockType = 'Admin';
                 blockTitle = 'Morning Admin';
-                blockContext = isWorkHours ? 'Work' : 'Personal';
+                blockContext = workShift.isAtSite ? 'Work' : 'Personal';
                 blockDuration = Math.min(45, maxBlockDuration, remainingMinutes);
                 blockEnergy = 'Medium';
             }
@@ -729,35 +805,53 @@ function generateBlocksForTimeSlot(slotStart, slotEnd, availableMinutes, adjuste
             if (adjustedParams.adjustedEnergy >= 7 && adjustedParams.deepWorkCapacity >= 0.6) {
                 blockType = 'Admin';
                 blockTitle = 'Afternoon Project Work';
-                blockContext = isWorkHours ? 'Work' : 'Personal';
+                blockContext = workShift.isAtSite ? 'Work' : 'Personal';
                 blockDuration = Math.min(maxBlockDuration, remainingMinutes);
                 blockEnergy = 'Medium';
             } else {
                 blockType = 'Admin';
                 blockTitle = 'Light Afternoon Tasks';
-                blockContext = isWorkHours ? 'Work' : 'Personal';
+                blockContext = workShift.isAtSite ? 'Work' : 'Personal';
                 blockDuration = Math.min(45, remainingMinutes);
                 blockEnergy = 'Low';
             }
             
         } else if (currentHour >= 15 && currentHour < 17) {
-            // Late afternoon
-            blockType = 'Events';
-            blockTitle = 'Riley Time' + (currentHour >= 16 ? ' (After School)' : '');
-            blockContext = 'Riley';
-            blockDuration = Math.min(60, remainingMinutes);
-            blockEnergy = 'Medium';
+            // FIXED: Only schedule Riley time if NOT at work site
+            if (!workShift.isAtSite) {
+                blockType = 'Events';
+                blockTitle = 'Riley Time' + (currentHour >= 16 ? ' (After School)' : '');
+                blockContext = 'Riley';
+                blockDuration = Math.min(90, remainingMinutes);
+                blockEnergy = 'Medium';
+            } else {
+                // At site: continue work tasks or personal time
+                blockType = 'Admin';
+                blockTitle = 'Site Work Tasks';
+                blockContext = 'Work';
+                blockDuration = Math.min(60, remainingMinutes);
+                blockEnergy = 'Medium';
+            }
             
         } else if (currentHour >= 17 && currentHour < 20) {
             // Evening hours
-            blockType = 'Events';
-            blockTitle = currentHour >= 18 ? 'Family Dinner Time' : 'Family Time';
-            blockContext = 'Family';
-            blockDuration = Math.min(60, remainingMinutes);
-            blockEnergy = 'Low';
+            if (!workShift.isAtSite) {
+                blockType = 'Events';
+                blockTitle = currentHour >= 18 ? 'Family Dinner Time' : 'Family Time';
+                blockContext = 'Family';
+                blockDuration = Math.min(90, remainingMinutes);
+                blockEnergy = 'Low';
+            } else {
+                // At site: personal recovery time
+                blockType = 'Events';
+                blockTitle = 'Site Recovery Time';
+                blockContext = 'Personal';
+                blockDuration = Math.min(60, remainingMinutes);
+                blockEnergy = 'Low';
+            }
             
         } else {
-            // Night hours
+            // Late evening
             blockType = 'Events';
             blockTitle = 'Personal Wind Down';
             blockContext = 'Personal';
@@ -765,7 +859,6 @@ function generateBlocksForTimeSlot(slotStart, slotEnd, availableMinutes, adjuste
             blockEnergy = 'Low';
         }
         
-        // Create the block
         blocks.push({
             title: blockTitle,
             startTime: currentTime,
@@ -773,16 +866,14 @@ function generateBlocksForTimeSlot(slotStart, slotEnd, availableMinutes, adjuste
             type: blockType,
             context: blockContext,
             energy: blockEnergy,
-            rationale: `AI Generated: ${blockDuration}min ${blockType} for ${currentHour}:00 slot (${adjustedParams.adjustedEnergy.toFixed(1)} energy, ${adjustedParams.deepWorkCapacity.toFixed(1)} capacity)`
+            rationale: `AI Generated: ${blockDuration}min ${blockType} for ${currentHour}:00 slot (Site: ${workShift.isAtSite})`
         });
         
         currentTime = addMinutes(currentTime, blockDuration);
         
-        // Add break if needed and space allows
-        const timeSinceStart = getMinutesBetween(slotStart, currentTime);
+        // Add breaks if needed
         const remainingAfterBreak = getMinutesBetween(currentTime, slotEnd);
-        
-        if (timeSinceStart >= breakInterval && remainingAfterBreak >= 45 && blockEnergy !== 'Low') {
+        if (blockDuration >= maxBlockDuration && remainingAfterBreak >= 30 && blockEnergy !== 'Low') {
             const breakDuration = isRecoveryMode ? 20 : 15;
             
             blocks.push({
@@ -792,7 +883,7 @@ function generateBlocksForTimeSlot(slotStart, slotEnd, availableMinutes, adjuste
                 type: 'Events',
                 context: 'Personal',
                 energy: 'Low',
-                rationale: `Adaptive break: ${breakDuration}min after ${timeSinceStart}min of activity`
+                rationale: `Adaptive break: ${breakDuration}min recovery`
             });
             
             currentTime = addMinutes(currentTime, breakDuration);
@@ -802,7 +893,7 @@ function generateBlocksForTimeSlot(slotStart, slotEnd, availableMinutes, adjuste
     return blocks;
 }
 
-// STEP 6: Create AI-generated time blocks in Notion
+// Create AI-generated time blocks in Notion
 async function createAIGeneratedTimeBlocks(aiBlocks, today, dailyLogId) {
     console.log(`💾 Creating ${aiBlocks.length} AI-generated time blocks...`);
     
@@ -816,36 +907,43 @@ async function createAIGeneratedTimeBlocks(aiBlocks, today, dailyLogId) {
             
             console.log(`📝 Creating AI block ${index + 1}/${aiBlocks.length}: ${block.title} (${block.startTime}-${endTime})`);
             
+            // FIXED: Conditionally include Daily Logs relation
+            const properties = {
+                Title: { title: [{ text: { content: block.title } }] },
+                Type: { select: { name: block.type } },
+                Context: { select: { name: block.context } },
+                'Energy Requirements': { select: { name: block.energy } },
+                Status: { select: { name: 'Active' } },
+                'Start Time': { 
+                    date: { 
+                        start: startUTC,
+                        time_zone: 'America/Vancouver'
+                    } 
+                },
+                'End Time': { 
+                    date: { 
+                        start: endUTC,
+                        time_zone: 'America/Vancouver'
+                    } 
+                },
+                'Auto-Filled': { checkbox: true },
+                Notes: { 
+                    rich_text: [{ 
+                        text: { 
+                            content: `${block.rationale}\n\nType: ${block.type} | Context: ${block.context}\nEnergy: ${block.energy} | Duration: ${block.duration}min\n\nAI Enhanced Scheduling v2.0\nGenerated: ${new Date().toLocaleString()}`
+                        } 
+                    }] 
+                }
+            };
+            
+            // Only add Daily Logs relation if we have a valid ID
+            if (dailyLogId) {
+                properties['Daily Logs'] = { relation: [{ id: dailyLogId }] };
+            }
+            
             const timeBlockResponse = await notion.pages.create({
                 parent: { database_id: TIME_BLOCKS_DB_ID },
-                properties: {
-                    Title: { title: [{ text: { content: block.title } }] },
-                    Type: { select: { name: block.type } },
-                    Context: { select: { name: block.context } },
-                    'Energy Requirements': { select: { name: block.energy } },
-                    Status: { select: { name: 'Active' } },
-                    'Start Time': { 
-                        date: { 
-                            start: startUTC,
-                            time_zone: 'America/Vancouver'
-                        } 
-                    },
-                    'End Time': { 
-                        date: { 
-                            start: endUTC,
-                            time_zone: 'America/Vancouver'
-                        } 
-                    },
-                    'Auto-Filled': { checkbox: true }, // AI-generated blocks are auto-filled
-                    'Daily Logs': dailyLogId ? { relation: [{ id: dailyLogId }] } : undefined,
-                    Notes: { 
-                        rich_text: [{ 
-                            text: { 
-                                content: `${block.rationale}\n\nType: ${block.type} | Context: ${block.context}\nEnergy: ${block.energy} | Duration: ${block.duration}min\n\nAI Enhanced Scheduling v2.0\nGenerated: ${new Date().toLocaleString()}`
-                            } 
-                        }] 
-                    }
-                }
+                properties: properties
             });
             
             console.log(`✅ Created AI block: ${block.type}(${block.context}) - ${block.title}`);
@@ -859,7 +957,7 @@ async function createAIGeneratedTimeBlocks(aiBlocks, today, dailyLogId) {
                 duration: block.duration,
                 rationale: block.rationale,
                 notionId: timeBlockResponse.id,
-                gCalId: null, // Will be populated during export
+                gCalId: null,
                 status: 'created'
             });
             
@@ -878,7 +976,7 @@ async function createAIGeneratedTimeBlocks(aiBlocks, today, dailyLogId) {
     return results;
 }
 
-// STEP 7: Export new blocks to Google Calendar (only those without GCal ID)
+// Export new blocks to Google Calendar
 async function exportNewBlocksToCalendar(today) {
     if (!calendarEnabled) {
         console.log('📅 Calendar export disabled, skipping sync');
@@ -887,7 +985,6 @@ async function exportNewBlocksToCalendar(today) {
     
     console.log('📤 Exporting new time blocks to Google Calendar...');
     
-    // Get all today's time blocks that don't have GCal IDs yet
     const dayRange = getPacificDateRange(today);
     
     const newBlocks = await notion.databases.query({
@@ -928,13 +1025,12 @@ async function exportNewBlocksToCalendar(today) {
                 continue;
             }
             
-            // Get the appropriate calendar for this block
+            // Use exact key format that matches your mapping
             const routingKey = `${context}-${type}`;
             const calendarId = CONTEXT_TYPE_TO_CALENDAR_ID[routingKey] || "shamilarae@gmail.com";
             
             console.log(`📤 Exporting "${title}" to ${routingKey} -> ${calendarId.substring(0, 20)}...`);
             
-            // Create the calendar event
             const event = {
                 summary: title,
                 description: `${notes}\n\nType: ${type} | Context: ${context}\nEnhanced AI Scheduler v2.0`,
@@ -953,7 +1049,7 @@ async function exportNewBlocksToCalendar(today) {
                 resource: event
             });
             
-            // Update the Notion block with the new GCal ID
+            // Update Notion with GCal ID
             await notion.pages.update({
                 page_id: block.id,
                 properties: {
@@ -990,7 +1086,7 @@ async function exportNewBlocksToCalendar(today) {
     return exportResults;
 }
 
-// STEP 8: Clear only AI-generated blocks (Auto-Filled = true) before regenerating
+// Clear auto-filled blocks
 async function clearAutoFilledBlocks(today) {
     try {
         console.log('🧹 Clearing existing AI-generated blocks...');
@@ -1020,11 +1116,8 @@ async function clearAutoFilledBlocks(today) {
         console.log(`🧹 Found ${autoFilledBlocks.results.length} AI-generated blocks to clear`);
 
         let cleared = 0;
-        let failed = 0;
-
         for (const block of autoFilledBlocks.results) {
             try {
-                // Archive the block
                 await notion.pages.update({
                     page_id: block.id,
                     archived: true
@@ -1032,18 +1125,17 @@ async function clearAutoFilledBlocks(today) {
                 cleared++;
             } catch (error) {
                 console.error(`⚠️ Failed to clear block ${block.id}:`, error.message);
-                failed++;
             }
         }
 
-        console.log(`✅ Cleared ${cleared} AI blocks, ${failed} failures`);
+        console.log(`✅ Cleared ${cleared} AI blocks`);
         
     } catch (error) {
         console.error('⚠️ Error clearing auto-filled blocks:', error.message);
     }
 }
 
-// MAIN ORCHESTRATOR: Complete bi-directional sync workflow
+// Main workflow orchestrator
 async function runBidirectionalSync(today) {
     console.log('🚀 Starting bi-directional calendar sync workflow...');
     
@@ -1058,21 +1150,21 @@ async function runBidirectionalSync(today) {
     };
     
     try {
-        // STEP 1: Clear existing AI blocks (preserve imported events)
+        // Step 1: Clear existing AI blocks
         await clearAutoFilledBlocks(today);
         
-        // STEP 2: Import existing Google Calendar events
+        // Step 2: Import existing calendar events
         const importedEvents = await importExistingCalendarEvents(today);
         results.imported = await createImportedTimeBlocks(importedEvents, today);
         
-        // STEP 3: Get morning log and calculate adjustments
+        // Step 3: Get morning log and calculate adjustments
         results.morningData = await getEnhancedMorningLog(today);
         results.adjustedParams = calculateAdjustedParameters(results.morningData);
         
-        // STEP 4: Check work schedule
+        // Step 4: Check work schedule
         results.workShift = await getWorkShift(today);
         
-        // STEP 5: Generate AI schedule around existing events
+        // Step 5: Generate AI schedule around existing events
         const aiBlocks = await generateAIScheduleAroundFixedEvents(
             importedEvents, 
             results.morningData, 
@@ -1080,11 +1172,11 @@ async function runBidirectionalSync(today) {
             results.workShift
         );
         
-        // STEP 6: Create AI blocks in Notion
+        // Step 6: Create AI blocks in Notion
         const dailyLogId = await getDailyLogId(today);
         results.aiGenerated = await createAIGeneratedTimeBlocks(aiBlocks, today, dailyLogId);
         
-        // STEP 7: Export new blocks to Google Calendar
+        // Step 7: Export new blocks to Google Calendar
         results.exported = await exportNewBlocksToCalendar(today);
         
         console.log('🎉 Bi-directional sync completed successfully');
@@ -1101,7 +1193,6 @@ async function runBidirectionalSync(today) {
     return results;
 }
 
-// Helper: Get daily log ID for relation linking
 async function getDailyLogId(today) {
     try {
         const dailyLogResponse = await notion.databases.query({
@@ -1117,29 +1208,7 @@ async function getDailyLogId(today) {
     }
 }
 
-// Helper: Check work schedule
-async function getWorkShift(today) {
-    try {
-        const workStart = new Date(WORK_SCHEDULE.startDate);
-        const workEnd = new Date(WORK_SCHEDULE.endDate);
-        const checkDate = new Date(today);
-        
-        const isInWorkPeriod = checkDate >= workStart && checkDate <= workEnd;
-        const isWeekday = checkDate.getDay() >= 1 && checkDate.getDay() <= 5;
-        
-        return {
-            isWorkDay: isInWorkPeriod && isWeekday,
-            startTime: WORK_SCHEDULE.dailyStart,
-            endTime: WORK_SCHEDULE.dailyEnd,
-            title: isInWorkPeriod && isWeekday ? 'Work Day' : 'Home Day'
-        };
-    } catch (error) {
-        console.error('Error checking work schedule:', error.message);
-        return { isWorkDay: false, startTime: '09:00', endTime: '17:00', title: 'Home Day' };
-    }
-}
-
-// Display current schedule (read-only operation)
+// Display current schedule (convert stored UTC times back to Pacific for display)
 async function getCurrentSchedule(today) {
     try {
         const dayRange = getPacificDateRange(today);
@@ -1173,12 +1242,13 @@ async function getCurrentSchedule(today) {
 
                 if (!startTime) return null;
 
+                // Convert UTC times back to Pacific for display
                 const pacificStartTime = utcToPacificTime(startTime);
                 const pacificEndTime = endTime ? utcToPacificTime(endTime) : '';
 
-                // Verify this is today's block
-                const startUTC = new Date(startTime);
-                const pacificStart = new Date(startUTC.getTime() + (getPacificOffset() * 60 * 60 * 1000));
+                // Verify this is today's block by checking the Pacific date
+                const utcStart = new Date(startTime);
+                const pacificStart = new Date(utcStart.toLocaleString("en-US", {timeZone: "America/Vancouver"}));
                 const pacificDateStr = pacificStart.toISOString().split('T')[0];
                 
                 if (pacificDateStr !== today) return null;
@@ -1187,7 +1257,7 @@ async function getCurrentSchedule(today) {
                     time: pacificStartTime,
                     endTime: pacificEndTime,
                     title,
-                    type: type.toLowerCase().replace(/\s+/g, '-'),
+                    type: getTypeClass(type),
                     energy: 'medium',
                     details: `${context} • ${type}${autoFilled ? ' • AI Enhanced' : ''}${gCalId ? ' • Synced' : ' • Local Only'}`
                 };
@@ -1205,6 +1275,22 @@ async function getCurrentSchedule(today) {
     }
 }
 
+// Map type to original CSS classes for color scheme
+function getTypeClass(type) {
+    const typeMapping = {
+        'Deep Work': 'deep-work',
+        'Admin': 'admin',
+        'Events': 'personal',
+        'Meeting': 'meeting',
+        'Routine': 'routine',
+        'Appointment': 'meeting',
+        'Travel': 'admin',
+        'Break': 'break'
+    };
+    
+    return typeMapping[type] || 'personal';
+}
+
 // MAIN VERCEL HANDLER
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1218,7 +1304,7 @@ export default async function handler(req, res) {
     const startTime = Date.now();
     
     try {
-        console.log('🚀 Idempotent Bi-Directional Scheduler API v2.0');
+        console.log('🚀 UTC-First Bi-Directional Scheduler v2.2');
         
         if (!process.env.NOTION_TOKEN) {
             return res.status(500).json({
@@ -1233,13 +1319,11 @@ export default async function handler(req, res) {
         
         console.log(`📋 Request ${requestId}: action=${action}, date=${today}`);
 
-        // Handle bi-directional sync
         if (action === 'create') {
             console.log('🔄 Running complete bi-directional sync...');
             
             const syncResults = await runBidirectionalSync(today);
             
-            // Store global results for debugging
             global.lastCreationResult = {
                 success: syncResults.aiGenerated.filter(b => b.status === 'created').length,
                 failed: syncResults.aiGenerated.filter(b => b.status === 'failed').length,
@@ -1248,6 +1332,8 @@ export default async function handler(req, res) {
                 adjustedParams: syncResults.adjustedParams,
                 morningData: syncResults.morningData,
                 workDay: syncResults.workShift.isWorkDay,
+                isAtSite: syncResults.workShift.isAtSite,
+                workShiftTitle: syncResults.workShift.title,
                 optimizations: syncResults.adjustedParams ? Object.keys(syncResults.adjustedParams.optimizations).length : 0,
                 calendarEnabled: calendarEnabled,
                 errors: syncResults.errors,
@@ -1255,7 +1341,6 @@ export default async function handler(req, res) {
             };
         }
 
-        // Always fetch and return current schedule
         const schedule = await getCurrentSchedule(today);
         const now = new Date();
         const processingTime = Date.now() - startTime;
@@ -1268,7 +1353,7 @@ export default async function handler(req, res) {
                 lastCreationResult: global.lastCreationResult || null,
                 processingTimeMs: processingTime,
                 timestamp: now.toISOString(),
-                version: '2.0-Bidirectional',
+                version: '2.2-UTC-First',
                 calendarEnabled: calendarEnabled,
                 requestId: requestId,
                 workflow: 'Import → AI Schedule → Export'
@@ -1302,22 +1387,13 @@ export default async function handler(req, res) {
     } catch (error) {
         const processingTime = Date.now() - startTime;
         
-        console.error('❌ Bi-Directional Scheduler Error:', error.message);
+        console.error('❌ UTC-First Scheduler Error:', error.message);
         
         res.status(500).json({ 
-            error: 'Bi-directional sync failed',
+            error: 'UTC-first scheduler failed',
             details: error.message,
-            troubleshooting: {
-                workflow: 'Import existing events → Generate AI schedule → Export to calendars',
-                duplicatePrevention: 'Only creates calendar events for blocks without GCal IDs',
-                commonIssues: [
-                    'Missing Google Calendar credentials',
-                    'Notion database permission issues',
-                    'Calendar API rate limits'
-                ]
-            },
             meta: {
-                version: '2.0-Bidirectional',
+                version: '2.2-UTC-First',
                 processingTime: processingTime,
                 timestamp: new Date().toISOString(),
                 calendarEnabled: calendarEnabled
