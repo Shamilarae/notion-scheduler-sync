@@ -398,9 +398,9 @@ async function getEnhancedMorningLog(today) {
     }
 }
 
-// Schedule creation functions
+// Schedule creation functions - FIXED LOGIC
 function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusCapacity, allTasks) {
-    console.log('Creating work day schedule with task-driven 30-min blocks');
+    console.log('Creating work day schedule with proper block variety');
     
     let schedule = [];
     let currentTime = wakeTime;
@@ -416,7 +416,7 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     });
     currentTime = addMinutes(currentTime, 30);
     
-    // Morning planning
+    // Morning planning - SINGLE BLOCK
     schedule.push({
         title: 'Morning Planning & Setup',
         start: currentTime,
@@ -427,39 +427,48 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     });
     currentTime = addMinutes(currentTime, 30);
     
-    // Routine tasks (must complete by 10 AM)
+    // ROUTINE TASKS ONLY (must complete by 10 AM) - NOT endless admin
     const morningAdminEnd = '10:00';
-    const routineBlocks = createTaskBlocks(
-        routineTasks, 
-        { start: currentTime, end: morningAdminEnd }, 
-        'Routine'
-    );
-    schedule.push(...routineBlocks);
-    
-    if (routineBlocks.length > 0) {
-        const lastRoutineBlock = routineBlocks[routineBlocks.length - 1];
-        currentTime = addMinutes(lastRoutineBlock.start, lastRoutineBlock.duration);
+    if (routineTasks.length > 0 && getMinutesBetween(currentTime, morningAdminEnd) >= 30) {
+        const routineBlocks = createTaskBlocks(
+            routineTasks, 
+            { start: currentTime, end: morningAdminEnd }, 
+            'Routine'
+        );
+        schedule.push(...routineBlocks);
+        
+        if (routineBlocks.length > 0) {
+            const lastRoutineBlock = routineBlocks[routineBlocks.length - 1];
+            currentTime = addMinutes(lastRoutineBlock.start, lastRoutineBlock.duration);
+        }
     }
     
-    // Fill remaining morning admin time
+    // FIXED: Fill remaining time with DEEP WORK, not admin
     if (getMinutesBetween(currentTime, morningAdminEnd) >= 30) {
-        const morningAdminBlocks = createStandardBlocks(currentTime, morningAdminEnd, 'Admin', 'Work');
-        schedule.push(...morningAdminBlocks);
+        const morningDeepWorkBlocks = createStandardBlocks(currentTime, morningAdminEnd, 'Deep Work', 'Work');
+        schedule.push(...morningDeepWorkBlocks);
     }
     currentTime = morningAdminEnd;
     
-    // Deep work blocks (10 AM - 12 PM)
+    // DEEP WORK PRIME TIME (10 AM - 12 PM) - High energy blocks
     const deepWorkEnd = '12:00';
     const deepWorkTasks = allTasks.filter(t => t.type === 'project' || t.priority === 'High');
-    const deepWorkBlocks = createTaskBlocks(
-        deepWorkTasks,
-        { start: currentTime, end: deepWorkEnd },
-        'Deep Work'
-    );
-    schedule.push(...deepWorkBlocks);
+    
+    if (deepWorkTasks.length > 0) {
+        const deepWorkBlocks = createTaskBlocks(
+            deepWorkTasks,
+            { start: currentTime, end: deepWorkEnd },
+            'Deep Work'
+        );
+        schedule.push(...deepWorkBlocks);
+    } else {
+        // No tasks - create standard deep work blocks
+        const standardDeepWork = createStandardBlocks(currentTime, deepWorkEnd, 'Deep Work', 'Work');
+        schedule.push(...standardDeepWork);
+    }
     currentTime = deepWorkEnd;
     
-    // Lunch
+    // Lunch break
     schedule.push({
         title: 'Lunch Break',
         start: currentTime,
@@ -470,21 +479,33 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     });
     currentTime = addMinutes(currentTime, 60);
     
-    // Afternoon work
+    // AFTERNOON PROJECT WORK (1 PM - 4 PM) - Mix of types
     const afternoonWorkEnd = '16:00';
-    const afternoonTasks = allTasks.filter(t => !deepWorkTasks.includes(t) && !routineTasks.includes(t));
-    const afternoonBlocks = createTaskBlocks(
-        afternoonTasks,
-        { start: currentTime, end: afternoonWorkEnd },
-        'Admin'
-    );
-    schedule.push(...afternoonBlocks);
+    const remainingTime = getMinutesBetween(currentTime, afternoonWorkEnd);
+    
+    if (remainingTime >= 30) {
+        // Create variety of afternoon blocks
+        let afternoonTime = currentTime;
+        
+        // 1:00-2:30 - Project/Creative work
+        if (getMinutesBetween(afternoonTime, afternoonWorkEnd) >= 90) {
+            const creativeBlocks = createStandardBlocks(afternoonTime, addMinutes(afternoonTime, 90), 'Deep Work', 'Work');
+            schedule.push(...creativeBlocks);
+            afternoonTime = addMinutes(afternoonTime, 90);
+        }
+        
+        // 2:30-4:00 - Mixed work blocks
+        if (getMinutesBetween(afternoonTime, afternoonWorkEnd) >= 30) {
+            const mixedBlocks = createStandardBlocks(afternoonTime, afternoonWorkEnd, 'Admin', 'Work');
+            schedule.push(...mixedBlocks);
+        }
+    }
     currentTime = afternoonWorkEnd;
     
-    // Afternoon admin block
+    // SINGLE afternoon admin block only
     if (getMinutesBetween(currentTime, workShift.endTime) >= 30) {
         schedule.push({
-            title: 'Afternoon Admin & Communications',
+            title: 'End of Day Admin & Wrap-up',
             start: currentTime,
             duration: 30,
             type: 'Admin',
@@ -494,14 +515,14 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         currentTime = addMinutes(currentTime, 30);
     }
     
-    // Fill rest of work time
+    // Fill remaining work time with meetings/calls
     if (getMinutesBetween(currentTime, workShift.endTime) >= 30) {
-        const endWorkBlocks = createStandardBlocks(currentTime, workShift.endTime, 'Admin', 'Work');
+        const endWorkBlocks = createStandardBlocks(currentTime, workShift.endTime, 'Meeting', 'Work');
         schedule.push(...endWorkBlocks);
     }
     currentTime = workShift.endTime;
     
-    // Evening wrap-up
+    // Evening wrap-up - SINGLE BLOCK
     schedule.push({
         title: 'Day Review & Tomorrow Planning',
         start: currentTime,
