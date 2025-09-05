@@ -944,11 +944,21 @@ async function runEnhancedScheduler(today) {
         const workShift = await getWorkShift(today);
         
         // Step 5: Get tasks for today
-        const allTasks = await getTodaysTasks(today);
-        const routineTasks = allTasks.filter(t => t.routine);
-        const projectTasks = allTasks.filter(t => !t.routine);
+        console.log('📋 Fetching tasks from Notion...');
+        let allTasks = [];
+        let routineTasks = [];
+        let projectTasks = [];
         
-        console.log(`📋 Found ${allTasks.length} tasks (${routineTasks.length} routine, ${projectTasks.length} projects)`);
+        try {
+            allTasks = await getTodaysTasks(today);
+            routineTasks = allTasks.filter(t => t.routine);
+            projectTasks = allTasks.filter(t => !t.routine);
+            
+            console.log(`📋 Found ${allTasks.length} tasks (${routineTasks.length} routine, ${projectTasks.length} projects)`);
+        } catch (taskError) {
+            console.error('⚠️ Failed to fetch tasks:', taskError.message);
+            console.log('📋 Continuing with empty task list');
+        }
         
         // Step 6: Generate schedule using task-driven logic
         let schedule;
@@ -1101,7 +1111,7 @@ function getTypeClass(type) {
     return typeMapping[type] || 'personal';
 }
 
-// VERCEL HANDLER
+// VERCEL HANDLER with comprehensive debugging
 module.exports = async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1114,7 +1124,15 @@ module.exports = async function handler(req, res) {
     const startTime = Date.now();
     
     try {
-        console.log('🚀 Complete Fixed Scheduler v2.0 - No Gaps, Proper Breaks');
+        console.log('🚀 Complete Fixed Scheduler v2.0 - Function Check');
+        
+        // Debug: Check if critical functions exist
+        console.log('🔍 Function availability check:');
+        console.log('- getTodaysTasks:', typeof getTodaysTasks);
+        console.log('- getWorkShift:', typeof getWorkShift);
+        console.log('- createWorkDaySchedule:', typeof createWorkDaySchedule);
+        console.log('- createHomeDaySchedule:', typeof createHomeDaySchedule);
+        console.log('- runEnhancedScheduler:', typeof runEnhancedScheduler);
         
         if (!process.env.NOTION_TOKEN) {
             return res.status(500).json({
@@ -1126,8 +1144,18 @@ module.exports = async function handler(req, res) {
         const today = new Date().toISOString().split('T')[0];
         const action = req.query.action || 'display';
         
+        console.log(`📋 Processing request: action=${action}, date=${today}`);
+        
         if (action === 'create') {
             console.log('🔄 Running complete fixed scheduler...');
+            
+            // Additional function check right before calling
+            if (typeof getTodaysTasks !== 'function') {
+                console.error('❌ CRITICAL: getTodaysTasks is not a function');
+                console.error('Type:', typeof getTodaysTasks);
+                throw new Error('getTodaysTasks function is not available');
+            }
+            
             await runEnhancedScheduler(today);
         }
 
@@ -1143,15 +1171,13 @@ module.exports = async function handler(req, res) {
                 lastCreationResult: global.lastCreationResult || null,
                 processingTimeMs: processingTime,
                 timestamp: now.toISOString(),
-                version: '2.0-Complete-Fixed',
+                version: '2.0-Debug-Enhanced',
                 calendarEnabled: calendarEnabled,
-                features: [
-                    'No time gaps',
-                    'Auto break insertion',
-                    'Intelligent filler blocks',
-                    'Proper timezone handling',
-                    'Bi-directional calendar sync'
-                ]
+                functionCheck: {
+                    getTodaysTasks: typeof getTodaysTasks,
+                    getWorkShift: typeof getWorkShift,
+                    createWorkDaySchedule: typeof createWorkDaySchedule
+                }
             },
             display: {
                 lastUpdate: now.toLocaleTimeString('en-US', { 
@@ -1176,15 +1202,22 @@ module.exports = async function handler(req, res) {
         const processingTime = Date.now() - startTime;
         
         console.error('❌ Complete Fixed Scheduler Error:', error.message);
+        console.error('❌ Error stack:', error.stack);
+        console.error('❌ Error details:', error);
         
         res.status(500).json({ 
             error: 'Complete scheduler failed',
             details: error.message,
+            stack: error.stack,
             meta: {
-                version: '2.0-Complete-Fixed',
+                version: '2.0-Debug-Enhanced',
                 processingTime: processingTime,
                 timestamp: new Date().toISOString(),
-                calendarEnabled: calendarEnabled
+                calendarEnabled: calendarEnabled,
+                functionCheck: {
+                    getTodaysTasks: typeof getTodaysTasks,
+                    getWorkShift: typeof getWorkShift
+                }
             }
         });
     }
