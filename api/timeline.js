@@ -212,6 +212,64 @@ function createFillerBlocks(startTime, endTime, energy = 'Medium') {
     return blocks;
 }
 
+// Work detection
+async function getWorkShift(today) {
+    if (!calendarEnabled) {
+        console.log('📅 Calendar disabled, assuming home day');
+        return { 
+            isWorkDay: false, 
+            isAtSite: false,
+            startTime: '09:00', 
+            endTime: '17:00', 
+            title: 'Home Day'
+        };
+    }
+
+    try {
+        const dayRange = getPacificDateRange(today);
+        
+        const workEvents = await calendar.events.list({
+            calendarId: WORK_SITE_CALENDAR_ID,
+            timeMin: dayRange.start,
+            timeMax: dayRange.end,
+            singleEvents: true,
+            maxResults: 10
+        });
+
+        const hasWorkEvents = workEvents.data.items && workEvents.data.items.length > 0;
+        
+        if (hasWorkEvents) {
+            console.log(`💼 Found ${workEvents.data.items.length} work site events - at site`);
+            return {
+                isWorkDay: true,
+                isAtSite: true,
+                startTime: '05:30',
+                endTime: '17:30',
+                title: 'Site Work Day'
+            };
+        } else {
+            console.log('🏠 No work site events found - home day');
+            return {
+                isWorkDay: false,
+                isAtSite: false,
+                startTime: '09:00',
+                endTime: '17:00',
+                title: 'Home Day'
+            };
+        }
+        
+    } catch (error) {
+        console.error('⚠️ Error checking work site calendar:', error.message);
+        return {
+            isWorkDay: false,
+            isAtSite: false,
+            startTime: '09:00',
+            endTime: '17:00',
+            title: 'Home Day (Error)'
+        };
+    }
+}
+
 // FIXED: Break insertion algorithm
 function insertBreaksIfNeeded(schedule) {
     const processedSchedule = [];
