@@ -45,6 +45,19 @@ try {
 }
 
 // Calendar routing
+const CONTEXT_TYPE_TO_CALENDAR_ID = {
+    "Personal-Events": "shamilarae@gmail.com",
+    "Personal-Admin": "ba46fd78742e193e5c80d2a0ce5cf83751fe66c8b3ac6433c5ad2eb3947295c8@group.calendar.google.com",
+    "Personal-Appointment": "0nul0g0lvc35c0jto1u5k5o87s@group.calendar.google.com",
+    "Family-Events": "family13053487624784455294@group.calendar.google.com",
+    "Work-Travel": "oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com",
+    "Work-Admin": "25a2b77c6b27260126cdf6171f6acee428b838e43615a6bbef498d8138047014@group.calendar.google.com",
+    "Work-Deep Work": "09b6f8683cb5c58381f1ce55fb75d56f644187db041705dc85cec04d279cb7bb@group.calendar.google.com",
+    "Work-Meeting": "80a0f0cdb416ef47c50563665533e3b83b30a5a9ca513bed4899045c9828b577@group.calendar.google.com",
+    "Work-Routine": "a110c482749029fc9ca7227691daa38f21f5a6bcc8dbf39053ad41f7b1d2bf09@group.calendar.google.com"
+};
+
+const ALL_CALENDAR_IDS = Object.values(CONTEXT_TYPE_TO_CALENDAR_ID);
 const WORK_SITE_CALENDAR_ID = 'oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com';
 
 // Timezone conversion functions
@@ -135,6 +148,30 @@ function getMinutesBetween(startTime, endTime) {
     } catch (error) {
         console.error('Error in getMinutesBetween:', error.message);
         return 0;
+    }
+}
+
+function timeToMinutes(timeStr) {
+    try {
+        const [hours, mins] = timeStr.split(':').map(Number);
+        if (isNaN(hours) || isNaN(mins)) {
+            throw new Error(`Invalid time format: ${timeStr}`);
+        }
+        return hours * 60 + mins;
+    } catch (error) {
+        console.error('Error in timeToMinutes:', error.message);
+        return 0;
+    }
+}
+
+function minutesToTime(minutes) {
+    try {
+        const hours = Math.floor(minutes / 60) % 24;
+        const mins = minutes % 60;
+        return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+    } catch (error) {
+        console.error('Error in minutesToTime:', error.message);
+        return '00:00';
     }
 }
 
@@ -244,27 +281,32 @@ function assignTaskToBlock(availableTasks, blockType) {
     
     if (unscheduledTasks.length === 0) return null;
     
+    let selectedTask = null;
+    
     if (blockType === 'Deep Work') {
-        const highPriorityTask = unscheduledTasks.find(task => task.priorityScore <= 2);
-        if (highPriorityTask) {
-            highPriorityTask.used = true;
-            return highPriorityTask;
+        selectedTask = unscheduledTasks.find(task => task.priorityScore <= 2);
+        if (!selectedTask) {
+            selectedTask = unscheduledTasks[0];
         }
+    } else if (blockType === 'Routine') {
+        selectedTask = unscheduledTasks.find(task => task.routine === true);
+        if (!selectedTask) {
+            selectedTask = unscheduledTasks[0];
+        }
+    } else {
+        selectedTask = unscheduledTasks[0];
     }
     
-    if (blockType === 'Routine') {
-        const routineTask = unscheduledTasks.find(task => task.routine === true);
-        if (routineTask) {
-            routineTask.used = true;
-            return routineTask;
-        }
-    }
-    
-    const suitableTask = unscheduledTasks[0];
-    
-    if (suitableTask) {
-        suitableTask.used = true;
-        return suitableTask;
+    if (selectedTask) {
+        selectedTask.used = true;
+        return {
+            title: selectedTask.title,
+            priority: selectedTask.priority,
+            priorityScore: selectedTask.priorityScore,
+            taskId: selectedTask.id,
+            type: selectedTask.type,
+            routine: selectedTask.routine
+        };
     }
     
     return null;
@@ -276,7 +318,7 @@ function shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, n
     const currentMinute = parseInt(currentTime.split(':')[1]);
     const totalMinutes = currentHour * 60 + currentMinute;
     
-    if (currentHour <= 6) return false;
+    if (consecutiveWorkMinutes < 45) return false;
     if (currentHour === 11 && currentMinute >= 30) return false;
     if (currentHour === 13 && currentMinute <= 30) return false;
     
@@ -286,6 +328,7 @@ function shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, n
         if (totalMinutes - lastBreakMinutes < 45) return false;
     }
     
+    if (consecutiveWorkMinutes >= 120) return true;
     if (consecutiveWorkMinutes >= 90) return true;
     if (consecutiveWorkMinutes >= 60 && nextBlockType === 'Deep Work') return true;
     
@@ -423,22 +466,11 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
         energy: 'Low'
     });
     currentTime = addMinutes(currentTime, 30);
-    
-    // Morning planning
-    schedule.push({
-        title: 'Morning Planning & Setup',
-        start: currentTime,
-        duration: 30,
-        type: 'Admin',
-        context: 'Work',
-        energy: 'Medium'
-    });
-    currentTime = addMinutes(currentTime, 30);
     consecutiveWorkMinutes = 30;
     
-    // Morning routine tasks
-    const morningAdminEnd = '10:00';
-    while (getMinutesBetween(currentTime, morningAdminEnd) >= 30) {
+    // Routine tasks
+    const routineEndTime = '10:00';
+    while (getMinutesBetween(currentTime, routineEndTime) >= 30) {
         const routineTask = assignTaskToBlock(routineTasks, 'Routine');
         
         if (routineTask) {
@@ -456,11 +488,81 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 start: currentTime,
                 duration: 30,
                 type: 'Admin',
-                context: 'Work',
+                context: 'Personal',
                 energy: 'Medium'
             });
         }
         
+        currentTime = addMinutes(currentTime, 30);
+        consecutiveWorkMinutes += 30;
+        
+        if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Admin') && 
+            getMinutesBetween(currentTime, routineEndTime) >= 45) {
+            schedule.push({
+                title: 'Morning Break',
+                start: currentTime,
+                duration: 15,
+                type: 'Events',
+                context: 'Personal',
+                energy: 'Low'
+            });
+            currentTime = addMinutes(currentTime, 15);
+            lastBreakTime = currentTime;
+            consecutiveWorkMinutes = 0;
+        }
+    }
+    currentTime = routineEndTime;
+    consecutiveWorkMinutes = 0;
+    
+    // Deep work blocks
+    const deepWorkEnd = '12:00';
+    while (getMinutesBetween(currentTime, deepWorkEnd) >= 30) {
+        if (energy >= 7 && focusCapacity === 'Sharp') {
+            const highPriorityTasks = allTasks.filter(t => t && typeof t.priorityScore === 'number' && t.priorityScore <= 2);
+            const highPriorityTask = assignTaskToBlock(highPriorityTasks, 'Deep Work');
+            if (highPriorityTask) {
+                schedule.push({
+                    title: highPriorityTask.title,
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Deep Work',
+                    context: 'Work',
+                    energy: 'High'
+                });
+            } else {
+                schedule.push({
+                    title: 'Deep Focus Session',
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Deep Work',
+                    context: 'Work',
+                    energy: 'High'
+                });
+            }
+            consecutiveWorkMinutes += 30;
+        } else {
+            const anyTask = assignTaskToBlock(allTasks, 'Admin');
+            if (anyTask) {
+                schedule.push({
+                    title: anyTask.title,
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Admin',
+                    context: 'Work',
+                    energy: 'Medium'
+                });
+            } else {
+                schedule.push({
+                    title: 'Project Work',
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Admin',
+                    context: 'Work',
+                    energy: 'Medium'
+                });
+            }
+            consecutiveWorkMinutes += 30;
+        }
         
         currentTime = addMinutes(currentTime, 30);
         
@@ -761,17 +863,30 @@ async function runEnhancedScheduler(today) {
             }
             
             allTasks = allTasks.map(task => {
-                if (!task.priorityScore) {
+                if (!task || typeof task !== 'object') {
+                    return null;
+                }
+                
+                if (typeof task.priorityScore !== 'number') {
                     const priority = task.priority || 'Medium';
                     task.priorityScore = priority === 'High' || priority === 'Urgent' ? 1 : 
                                        priority === 'Low' ? 5 : 
                                        priority === 'Routine' ? 4 : 3;
                 }
+                
                 if (task.used === undefined) {
                     task.used = false;
                 }
+                
+                if (task.routine === undefined) {
+                    const priority = task.priority || '';
+                    const type = task.type || '';
+                    const title = task.title || '';
+                    task.routine = priority === 'Routine' || type === 'Routine' || title.toLowerCase().includes('routine');
+                }
+                
                 return task;
-            });
+            }).filter(task => task !== null);
             
             routineTasks = allTasks.filter(t => t && t.routine === true);
             projectTasks = allTasks.filter(t => t && t.routine !== true);
@@ -999,7 +1114,7 @@ module.exports = async function handler(req, res) {
     const startTime = Date.now();
     
     try {
-        console.log('Clean Scheduler v4.0 - Complete Rewrite');
+        console.log('Clean Scheduler v4.1 - Complete Syntax Fix');
         
         if (!process.env.NOTION_TOKEN) {
             return res.status(500).json({
@@ -1030,7 +1145,7 @@ module.exports = async function handler(req, res) {
                 lastCreationResult: global.lastCreationResult || null,
                 processingTimeMs: processingTime,
                 timestamp: now.toISOString(),
-                version: '4.0-Complete-Rewrite',
+                version: '4.1-Complete-Syntax-Fix',
                 calendarEnabled: calendarEnabled
             },
             display: {
@@ -1063,14 +1178,53 @@ module.exports = async function handler(req, res) {
             details: error.message,
             stack: error.stack,
             meta: {
-                version: '4.0-Complete-Rewrite',
+                version: '4.1-Complete-Syntax-Fix',
                 processingTime: processingTime,
                 timestamp: new Date().toISOString(),
                 calendarEnabled: calendarEnabled
             }
         });
     }
-};
+};, 30);
+    
+    // Morning planning
+    schedule.push({
+        title: 'Morning Planning & Setup',
+        start: currentTime,
+        duration: 30,
+        type: 'Admin',
+        context: 'Work',
+        energy: 'Medium'
+    });
+    currentTime = addMinutes(currentTime, 30);
+    consecutiveWorkMinutes = 30;
+    
+    // Morning routine tasks
+    const morningAdminEnd = '10:00';
+    while (getMinutesBetween(currentTime, morningAdminEnd) >= 30) {
+        const routineTask = assignTaskToBlock(routineTasks, 'Routine');
+        
+        if (routineTask) {
+            schedule.push({
+                title: routineTask.title,
+                start: currentTime,
+                duration: 30,
+                type: 'Routine',
+                context: 'Work',
+                energy: 'Medium'
+            });
+        } else {
+            schedule.push({
+                title: 'Morning Admin Tasks',
+                start: currentTime,
+                duration: 30,
+                type: 'Admin',
+                context: 'Work',
+                energy: 'Medium'
+            });
+        }
+        
+        currentTime = addMinutes(currentTime, 30);
         consecutiveWorkMinutes += 30;
         
         if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Admin') && 
@@ -1105,8 +1259,7 @@ module.exports = async function handler(req, res) {
                 duration: 30,
                 type: 'Deep Work',
                 context: 'Work',
-                energy: 'High',
-                taskId: highPriorityTask.taskId || null
+                energy: 'High'
             });
             consecutiveWorkMinutes += 30;
         } else if (deepWorkCapacity) {
@@ -1118,8 +1271,7 @@ module.exports = async function handler(req, res) {
                     duration: 30,
                     type: 'Deep Work',
                     context: 'Work',
-                    energy: 'High',
-                    taskId: anyTask.taskId || null
+                    energy: 'High'
                 });
             } else {
                 schedule.push({
@@ -1141,8 +1293,7 @@ module.exports = async function handler(req, res) {
                     duration: 30,
                     type: 'Admin',
                     context: 'Work',
-                    energy: 'Medium',
-                    taskId: mediumTask.taskId || null
+                    energy: 'Medium'
                 });
             } else {
                 schedule.push({
@@ -1351,103 +1502,4 @@ function createHomeDaySchedule(wakeTime, projectTasks, routineTasks, energy, foc
         context: 'Personal',
         energy: 'Medium'
     });
-    currentTime = addMinutes(currentTime, 30);
-    consecutiveWorkMinutes = 30;
-    
-    // Routine tasks
-    const routineEndTime = '10:00';
-    while (getMinutesBetween(currentTime, routineEndTime) >= 30) {
-        const routineTask = assignTaskToBlock(routineTasks, 'Routine');
-        
-        if (routineTask) {
-            schedule.push({
-                title: routineTask.title,
-                start: currentTime,
-                duration: 30,
-                type: 'Routine',
-                context: 'Work',
-                energy: 'Medium'
-            });
-        } else {
-            schedule.push({
-                title: 'Morning Admin Tasks',
-                start: currentTime,
-                duration: 30,
-                type: 'Admin',
-                context: 'Personal',
-                energy: 'Medium'
-            });
-        }
-        
-        currentTime = addMinutes(currentTime, 30);
-        consecutiveWorkMinutes += 30;
-        
-        if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Admin') && 
-            getMinutesBetween(currentTime, routineEndTime) >= 45) {
-            schedule.push({
-                title: 'Morning Break',
-                start: currentTime,
-                duration: 15,
-                type: 'Events',
-                context: 'Personal',
-                energy: 'Low'
-            });
-            currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
-            consecutiveWorkMinutes = 0;
-        }
-    }
-    currentTime = routineEndTime;
-    consecutiveWorkMinutes = 0;
-    
-    // Deep work blocks
-    const deepWorkEnd = '12:00';
-    while (getMinutesBetween(currentTime, deepWorkEnd) >= 30) {
-        if (energy >= 7 && focusCapacity === 'Sharp') {
-            const highPriorityTasks = allTasks.filter(t => t && typeof t.priorityScore === 'number' && t.priorityScore <= 2);
-            const highPriorityTask = assignTaskToBlock(highPriorityTasks, 'Deep Work');
-            if (highPriorityTask) {
-                schedule.push({
-                    title: highPriorityTask.title,
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Deep Work',
-                    context: 'Work',
-                    energy: 'High'
-                });
-            } else {
-                schedule.push({
-                    title: 'Deep Focus Session',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Deep Work',
-                    context: 'Work',
-                    energy: 'High'
-                });
-            }
-            consecutiveWorkMinutes += 30;
-        } else {
-            const anyTask = assignTaskToBlock(allTasks, 'Admin');
-            if (anyTask) {
-                schedule.push({
-                    title: anyTask.title,
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Medium'
-                });
-            } else {
-                schedule.push({
-                    title: 'Project Work',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Medium'
-                });
-            }
-            consecutiveWorkMinutes += 30;
-        }
-        
-        currentTime = addMinutes(currentTime, 30);
+    currentTime = addMinutes(currentTime
