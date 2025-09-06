@@ -1,4 +1,201 @@
-const { Client } = require('@notionhq/client');
+// FIXED: Home day schedule without taskId references
+function createHomeDaySchedule(wakeTime, projectTasks, routineTasks, energy, focusCapacity) {
+    console.log('Creating home day schedule with intelligent task integration');
+    console.log(`Available tasks: ${routineTasks.length} routine, ${projectTasks.length} project tasks`);
+    
+    let schedule = [];
+    let currentTime = wakeTime;
+    let consecutiveWorkMinutes = 0;
+    let lastBreakTime = null;
+    
+    // Combine and track all tasks
+    const allTasks = [...routineTasks, ...projectTasks];
+    
+    // Morning routine
+    schedule.push({
+        title: 'Morning Routine & Recovery',
+        start: currentTime,
+        duration: 60,
+        type: 'Events',
+        context: 'Personal',
+        energy: 'Medium'
+    });
+    currentTime = addMinutes(currentTime, 60);
+    
+    // Morning planning
+    schedule.push({
+        title: 'Morning Planning & Setup',
+        start: currentTime,
+        duration: 30,
+        type: 'Admin',
+        context: 'Personal',
+        energy: 'Medium'
+    });
+    currentTime = addMinutes(currentTime, 30);
+    consecutiveWorkMinutes = 30;
+    
+    // Routine tasks (must complete by 10 AM)
+    const routineEndTime = '10:00';
+    while (getMinutesBetween(currentTime, routineEndTime) >= 30) {
+        const routineTask = assignTaskToBlock(routineTasks, 'Routine');
+        
+        if (routineTask) {
+            schedule.push({
+                title: routineTask.title,
+                start: currentTime,
+                duration: 30,
+                type: 'Routine',
+                context: 'Work',
+                energy: 'Medium'
+            });
+        } else {
+            schedule.push({
+                title: 'Morning Admin Tasks',
+                start: currentTime,
+                duration: 30,
+                type: 'Admin',
+                context: 'Personal',
+                energy: 'Medium'
+            });
+        }
+        
+        currentTime = addMinutes(currentTime, 30);
+        consecutiveWorkMinutes += 30;
+        
+        // Smart break insertion for home days
+        if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Admin') && 
+            getMinutesBetween(currentTime, routineEndTime) >= 45) {
+            schedule.push({
+                title: 'Morning Break',
+                start: currentTime,
+                duration: 15,
+                type: 'Events',
+                context: 'Personal',
+                energy: 'Low'
+            });
+            currentTime = addMinutes(currentTime, 15);
+            lastBreakTime = currentTime;
+            consecutiveWorkMinutes = 0;
+        }
+    }
+    currentTime = routineEndTime;
+    consecutiveWorkMinutes = 0;
+    
+    // Deep work blocks based on energy (10 AM - 12 PM)
+    const deepWorkEnd = '12:00';
+    while (getMinutesBetween(currentTime, deepWorkEnd) >= 30) {
+        if (energy >= 7 && focusCapacity === 'Sharp') {
+            // FIXED: Safe filtering for high priority tasks
+            const highPriorityTasks = allTasks.filter(t => t && typeof t.priorityScore === 'number' && t.priorityScore <= 2);
+            const highPriorityTask = assignTaskToBlock(highPriorityTasks, 'Deep Work');
+            if (highPriorityTask) {
+                schedule.push({
+                    title: highPriorityTask.title,
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Deep Work',
+                    context: 'Work',
+                    energy: 'High'
+                });
+            } else {
+                schedule.push({
+                    title: 'Deep Focus Session',
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Deep Work',
+                    context: 'Work',
+                    energy: 'High'
+                });
+            }
+            consecutiveWorkMinutes += 30;
+        } else {
+            const anyTask = assignTaskToBlock(allTasks, 'Admin');
+            if (anyTask) {
+                schedule.push({
+                    title: anyTask.title,
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Admin',
+                    context: 'Work',
+                    energy: 'Medium'
+                });
+            } else {
+                schedule.push({
+                    title: 'Project Work',
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Admin',
+                    context: 'Work',
+                    energy: 'Medium'
+                });
+            }
+            consecutiveWorkMinutes += 30;
+        }
+        
+        currentTime = addMinutes(currentTime, 30);
+        
+        // Smart break for home days
+        if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Deep Work') && 
+            getMinutesBetween(currentTime, deepWorkEnd) >= 45) {
+            schedule.push({
+                title: 'Focus Break',
+                start: currentTime,
+                duration: 15,
+                type: 'Events',
+                context: 'Personal',
+                energy: 'Low'
+            });
+            currentTime = addMinutes(currentTime, 15);
+            lastBreakTime = currentTime;
+            consecutiveWorkMinutes = 0;
+        }
+    }
+    currentTime = deepWorkEnd;
+    
+    // Lunch
+    schedule.push({
+        title: 'Lunch Break',
+        start: currentTime,
+        duration: 60,
+        type: 'Events',
+        context: 'Personal',
+        energy: 'Low'
+    });
+    currentTime = addMinutes(currentTime, 60);
+    consecutiveWorkMinutes = 0;
+    lastBreakTime = currentTime; // Lunch counts as break
+    
+    // Afternoon work (13:00 - 15:30)
+    const afternoonWorkEnd = '15:30';
+    while (getMinutesBetween(currentTime, afternoonWorkEnd) >= 30) {
+        const remainingTask = assignTaskToBlock(allTasks, 'Admin');
+        
+        if (remainingTask) {
+            schedule.push({
+                title: remainingTask.title,
+                start: currentTime,
+                duration: 30,
+                type: 'Admin',
+                context: 'Work',
+                energy: 'Medium'
+            });
+        } else {
+            schedule.push({
+                title: 'Afternoon Project Work',
+                start: currentTime,
+                duration: 30,
+                type: 'Admin',
+                context: 'Work',
+                energy: 'Medium'
+            });
+        }
+        
+        currentTime = addMinutes(currentTime, 30);
+        consecutiveWorkMinutes += 30;
+        
+        // Afternoon break logic
+        if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Admin') && 
+            getMinuconst { Client } = require('@notionhq/client');
 
 // Initialize Notion client
 let notion;
