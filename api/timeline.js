@@ -407,12 +407,12 @@ async function getEnhancedMorningLog(today) {
     }
 }
 
-// COMPLETELY REWRITTEN: Intelligent work day schedule with proper task assignment
+// COMPLETELY REWRITTEN: Clean work day schedule without syntax errors
 function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusCapacity, projectTasks) {
-    console.log(`Creating INTELLIGENT work day schedule: Energy=${energy}, Focus=${focusCapacity}`);
+    console.log(`Creating work day schedule: Energy=${energy}, Focus=${focusCapacity}`);
     console.log(`Available tasks: ${routineTasks.length} routine, ${projectTasks.length} project tasks`);
     
-    let schedule = [];
+    const schedule = [];
     let currentTime = wakeTime;
     let consecutiveWorkMinutes = 0;
     let lastBreakTime = null;
@@ -427,25 +427,27 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     console.log(`Max consecutive work: ${maxConsecutiveWork} minutes, Deep work capacity: ${deepWorkCapacity}`);
     
     // Morning routine
-    schedule.push({
+    const morningRoutine = {
         title: 'Morning Routine (Work Camp)',
         start: currentTime,
         duration: 30,
         type: 'Events',
         context: 'Personal',
         energy: 'Low'
-    });
+    };
+    schedule.push(morningRoutine);
     currentTime = addMinutes(currentTime, 30);
     
     // Morning planning
-    schedule.push({
+    const morningPlanning = {
         title: 'Morning Planning & Setup',
         start: currentTime,
         duration: 30,
         type: 'Admin',
         context: 'Work',
         energy: 'Medium'
-    });
+    };
+    schedule.push(morningPlanning);
     currentTime = addMinutes(currentTime, 30);
     consecutiveWorkMinutes = 30;
     
@@ -454,8 +456,9 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     while (getMinutesBetween(currentTime, morningAdminEnd) >= 30) {
         const routineTask = assignTaskToBlock(routineTasks, 'Routine');
         
+        let blockData;
         if (routineTask) {
-            schedule.push({
+            blockData = {
                 title: routineTask.title,
                 start: currentTime,
                 duration: 30,
@@ -463,33 +466,35 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 context: 'Work',
                 energy: 'Medium',
                 taskId: routineTask.id
-            });
+            };
         } else {
-            // No more routine tasks, fill with admin
-            schedule.push({
+            blockData = {
                 title: 'Morning Admin Tasks',
                 start: currentTime,
                 duration: 30,
                 type: 'Admin',
                 context: 'Work',
                 energy: 'Medium'
-            });
+            };
         }
         
+        schedule.push(blockData);
         currentTime = addMinutes(currentTime, 30);
         consecutiveWorkMinutes += 30;
         
         // Smart break insertion
         if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Admin') && 
             getMinutesBetween(currentTime, morningAdminEnd) >= 45) {
-            schedule.push({
+            
+            const breakBlock = {
                 title: 'Energy Break',
                 start: currentTime,
                 duration: 15,
                 type: 'Events',
                 context: 'Personal',
                 energy: 'Low'
-            });
+            };
+            schedule.push(breakBlock);
             currentTime = addMinutes(currentTime, 15);
             lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
@@ -498,13 +503,14 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     currentTime = morningAdminEnd;
     consecutiveWorkMinutes = 0;
     
-    // PEAK DEEP WORK TIME (10 AM - 12 PM) - HIGHEST PRIORITY TASKS
+    // PEAK DEEP WORK TIME (10 AM - 12 PM)
     const deepWorkEnd = '12:00';
     while (getMinutesBetween(currentTime, deepWorkEnd) >= 30) {
         const highPriorityTask = assignTaskToBlock(allTasks.filter(t => t.priorityScore <= 2), 'Deep Work');
         
+        let workBlock;
         if (highPriorityTask && deepWorkCapacity) {
-            schedule.push({
+            workBlock = {
                 title: highPriorityTask.title,
                 start: currentTime,
                 duration: 30,
@@ -512,13 +518,12 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 context: 'Work',
                 energy: 'High',
                 taskId: highPriorityTask.id
-            });
+            };
             consecutiveWorkMinutes += 30;
         } else if (deepWorkCapacity) {
-            // No high priority tasks left, but can still do deep work
             const anyTask = assignTaskToBlock(allTasks, 'Deep Work');
             if (anyTask) {
-                schedule.push({
+                workBlock = {
                     title: anyTask.title,
                     start: currentTime,
                     duration: 30,
@@ -526,23 +531,22 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                     context: 'Work',
                     energy: 'High',
                     taskId: anyTask.id
-                });
+                };
             } else {
-                schedule.push({
+                workBlock = {
                     title: 'Deep Focus Session',
                     start: currentTime,
                     duration: 30,
                     type: 'Deep Work',
                     context: 'Work',
                     energy: 'High'
-                });
+                };
             }
             consecutiveWorkMinutes += 30;
         } else {
-            // Low energy - assign medium priority tasks
             const mediumTask = assignTaskToBlock(allTasks, 'Admin');
             if (mediumTask) {
-                schedule.push({
+                workBlock = {
                     title: mediumTask.title,
                     start: currentTime,
                     duration: 30,
@@ -550,33 +554,36 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                     context: 'Work',
                     energy: 'Medium',
                     taskId: mediumTask.id
-                });
+                };
             } else {
-                schedule.push({
+                workBlock = {
                     title: 'Project Work',
                     start: currentTime,
                     duration: 30,
                     type: 'Admin',
                     context: 'Work',
                     energy: 'Medium'
-                });
+                };
             }
             consecutiveWorkMinutes += 30;
         }
         
+        schedule.push(workBlock);
         currentTime = addMinutes(currentTime, 30);
         
         // Smart break after intense work
         if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Deep Work') && 
             getMinutesBetween(currentTime, deepWorkEnd) >= 45) {
-            schedule.push({
+            
+            const recoveryBreak = {
                 title: 'Focus Recovery Break',
                 start: currentTime,
                 duration: 15,
                 type: 'Events',
                 context: 'Personal',
                 energy: 'Low'
-            });
+            };
+            schedule.push(recoveryBreak);
             currentTime = addMinutes(currentTime, 15);
             lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
@@ -586,26 +593,28 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     
     // Lunch break
     const lunchDuration = energy <= 5 ? 75 : 60;
-    schedule.push({
+    const lunchBlock = {
         title: energy <= 5 ? 'Extended Lunch & Recovery' : 'Lunch Break',
         start: currentTime,
         duration: lunchDuration,
         type: 'Events',
         context: 'Personal',
         energy: 'Low'
-    });
+    };
+    schedule.push(lunchBlock);
     currentTime = addMinutes(currentTime, lunchDuration);
     consecutiveWorkMinutes = 0;
-    lastBreakTime = currentTime; // Lunch counts as a break
+    lastBreakTime = currentTime;
     
-    // AFTERNOON WORK (13:00/13:15 - 16:00) - Remaining tasks
+    // AFTERNOON WORK (13:00/13:15 - 16:00)
     const afternoonWorkEnd = '16:00';
     while (getMinutesBetween(currentTime, afternoonWorkEnd) >= 30) {
         const availableTask = assignTaskToBlock(allTasks, 'Admin');
         
+        let afternoonBlock;
         if (availableTask) {
             const blockType = availableTask.priorityScore <= 2 && energy >= 6 ? 'Deep Work' : 'Admin';
-            schedule.push({
+            afternoonBlock = {
                 title: availableTask.title,
                 start: currentTime,
                 duration: 30,
@@ -613,54 +622,45 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 context: 'Work',
                 energy: blockType === 'Deep Work' ? 'High' : 'Medium',
                 taskId: availableTask.id
-            });
+            };
         } else {
-            // No more tasks - create appropriate work blocks
             const currentHour = parseInt(currentTime.split(':')[0]);
+            let blockTitle;
             if (currentHour === 13 && energy >= 6) {
-                schedule.push({
-                    title: 'Afternoon Project Focus',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Medium'
-                });
+                blockTitle = 'Afternoon Project Focus';
             } else if (currentHour >= 14) {
-                schedule.push({
-                    title: 'Communications & Meetings',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Meeting',
-                    context: 'Work',
-                    energy: 'Medium'
-                });
+                blockTitle = 'Communications & Meetings';
             } else {
-                schedule.push({
-                    title: 'Administrative Work',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Medium'
-                });
+                blockTitle = 'Administrative Work';
             }
+            
+            afternoonBlock = {
+                title: blockTitle,
+                start: currentTime,
+                duration: 30,
+                type: currentHour >= 14 ? 'Meeting' : 'Admin',
+                context: 'Work',
+                energy: 'Medium'
+            };
         }
         
+        schedule.push(afternoonBlock);
         currentTime = addMinutes(currentTime, 30);
         consecutiveWorkMinutes += 30;
         
-        // Afternoon break logic - more conservative
+        // Afternoon break logic
         if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, 'Admin') && 
             getMinutesBetween(currentTime, afternoonWorkEnd) >= 45) {
-            schedule.push({
+            
+            const afternoonBreak = {
                 title: 'Afternoon Break',
                 start: currentTime,
                 duration: 15,
                 type: 'Events',
                 context: 'Personal',
                 energy: 'Low'
-            });
+            };
+            schedule.push(afternoonBreak);
             currentTime = addMinutes(currentTime, 15);
             lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
@@ -668,12 +668,13 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
     }
     currentTime = afternoonWorkEnd;
     
-    // End of day work (16:00-17:30) - Light tasks and wrap-up
+    // End of day work (16:00-17:30)
     while (getMinutesBetween(currentTime, workShift.endTime) >= 30) {
         const lightTask = assignTaskToBlock(allTasks.filter(t => t.priorityScore >= 4), 'Admin');
         
+        let endDayBlock;
         if (lightTask) {
-            schedule.push({
+            endDayBlock = {
                 title: lightTask.title,
                 start: currentTime,
                 duration: 30,
@@ -681,60 +682,65 @@ function createWorkDaySchedule(wakeTime, workShift, routineTasks, energy, focusC
                 context: 'Work',
                 energy: 'Low',
                 taskId: lightTask.id
-            });
+            };
         } else {
             const currentHour = parseInt(currentTime.split(':')[0]);
             const blockTitle = currentHour === 16 ? 'End of Day Admin' : 'Wrap-up & Planning';
-            schedule.push({
+            endDayBlock = {
                 title: blockTitle,
                 start: currentTime,
                 duration: 30,
                 type: 'Admin',
                 context: 'Work',
                 energy: 'Low'
-            });
+            };
         }
+        
+        schedule.push(endDayBlock);
         currentTime = addMinutes(currentTime, 30);
     }
     currentTime = workShift.endTime;
     
     // Evening routine
-    schedule.push({
+    const dayReview = {
         title: 'Day Review & Tomorrow Planning',
         start: currentTime,
         duration: 30,
         type: 'Admin',
         context: 'Personal',
         energy: 'Low'
-    });
+    };
+    schedule.push(dayReview);
     currentTime = addMinutes(currentTime, 30);
     
     // Personal wind-down
-    schedule.push({
+    const windDown = {
         title: 'Personal Wind Down',
         start: currentTime,
         duration: 60,
         type: 'Events',
         context: 'Personal',
         energy: 'Low'
-    });
+    };
+    schedule.push(windDown);
     currentTime = addMinutes(currentTime, 60);
     
     // Evening personal time
     while (getMinutesBetween(currentTime, '22:00') >= 30) {
-        schedule.push({
+        const personalTime = {
             title: 'Personal Time',
             start: currentTime,
             duration: 30,
             type: 'Events',
             context: 'Personal',
             energy: 'Low'
-        });
+        };
+        schedule.push(personalTime);
         currentTime = addMinutes(currentTime, 30);
     }
     
     const tasksScheduled = allTasks.filter(t => t.used).length;
-    console.log(`Created intelligent schedule with ${schedule.length} blocks, scheduled ${tasksScheduled}/${allTasks.length} tasks`);
+    console.log(`Created work schedule with ${schedule.length} blocks, scheduled ${tasksScheduled}/${allTasks.length} tasks`);
     
     return schedule;
 } blockType === 'Deep Work' ? 'High' : 'Medium',
