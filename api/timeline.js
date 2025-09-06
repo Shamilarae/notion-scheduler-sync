@@ -60,7 +60,57 @@ const CONTEXT_TYPE_TO_CALENDAR_ID = {
 const ALL_CALENDAR_IDS = Object.values(CONTEXT_TYPE_TO_CALENDAR_ID);
 const WORK_SITE_CALENDAR_ID = 'oqfs36dkqfqhpkrpsmd146kfm4@group.calendar.google.com';
 
-// CRITICAL: Define all functions at module level to ensure proper hoisting
+// FIXED: Proper timezone conversion functions
+function pacificTimeToUTC(pacificDateStr, pacificTimeStr) {
+    try {
+        // Create a date in Pacific timezone and convert to UTC
+        const pacificDateTime = `${pacificDateStr}T${pacificTimeStr}:00`;
+        const tempDate = new Date(pacificDateTime);
+        
+        // Use Intl.DateTimeFormat to get the proper offset for Pacific time
+        const pacificDate = new Date(tempDate.toLocaleString("en-US", {timeZone: "America/Vancouver"}));
+        const utcDate = new Date(tempDate.toLocaleString("en-US", {timeZone: "UTC"}));
+        const offset = utcDate.getTime() - pacificDate.getTime();
+        
+        return new Date(tempDate.getTime() + offset).toISOString();
+    } catch (error) {
+        console.error('Error in pacificTimeToUTC:', error.message);
+        return new Date(`${pacificDateStr}T${pacificTimeStr}:00.000Z`).toISOString();
+    }
+}
+
+function utcToPacificTime(utcDateStr) {
+    try {
+        const utcDate = new Date(utcDateStr);
+        
+        // Use proper timezone conversion
+        const pacificTime = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/Vancouver',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).format(utcDate);
+        
+        return pacificTime;
+    } catch (error) {
+        console.error('Error in utcToPacificTime:', error.message);
+        return '09:00';
+    }
+}
+
+function getPacificDateRange(pacificDateStr) {
+    try {
+        const startUTC = pacificTimeToUTC(pacificDateStr, '00:00');
+        const endUTC = pacificTimeToUTC(pacificDateStr, '23:59');
+        return { start: startUTC, end: endUTC };
+    } catch (error) {
+        console.error('Error in getPacificDateRange:', error.message);
+        return {
+            start: `${pacificDateStr}T00:00:00.000Z`,
+            end: `${pacificDateStr}T23:59:59.999Z`
+        };
+    }
+}
 
 // Get today's tasks - DEFINED FIRST TO AVOID SCOPE ISSUES
 async function getTodaysTasks(today) {
@@ -118,47 +168,6 @@ async function getTodaysTasks(today) {
     } catch (error) {
         console.error('Error getting tasks:', error.message);
         return [];
-    }
-}
-
-// Timezone utilities
-function pacificTimeToUTC(pacificDateStr, pacificTimeStr) {
-    try {
-        const pacificDateTime = `${pacificDateStr}T${pacificTimeStr}:00`;
-        const localDate = new Date(pacificDateTime);
-        const utcDate = new Date(localDate.getTime() + (7 * 60 * 60 * 1000));
-        return utcDate.toISOString();
-    } catch (error) {
-        console.error('Error in pacificTimeToUTC:', error.message);
-        return new Date(`${pacificDateStr}T${pacificTimeStr}:00.000Z`).toISOString();
-    }
-}
-
-function utcToPacificTime(utcDateStr) {
-    try {
-        const utcDate = new Date(utcDateStr);
-        const pacificDate = new Date(utcDate.getTime() - (7 * 60 * 60 * 1000));
-        
-        const hours = pacificDate.getUTCHours();
-        const minutes = pacificDate.getUTCMinutes();
-        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-    } catch (error) {
-        console.error('Error in utcToPacificTime:', error.message);
-        return '09:00';
-    }
-}
-
-function getPacificDateRange(pacificDateStr) {
-    try {
-        const startUTC = pacificTimeToUTC(pacificDateStr, '00:00');
-        const endUTC = pacificTimeToUTC(pacificDateStr, '23:59');
-        return { start: startUTC, end: endUTC };
-    } catch (error) {
-        console.error('Error in getPacificDateRange:', error.message);
-        return {
-            start: `${pacificDateStr}T00:00:00.000Z`,
-            end: `${pacificDateStr}T23:59:59.999Z`
-        };
     }
 }
 
@@ -1199,10 +1208,14 @@ async function runEnhancedScheduler(today) {
     }
 }
 
-// Display current schedule
+// FIXED: Display current schedule with proper timezone handling
 async function getCurrentSchedule(today) {
     try {
+        // Use proper Pacific timezone date range
         const dayRange = getPacificDateRange(today);
+        
+        console.log(`Getting schedule for ${today} Pacific`);
+        console.log(`UTC range: ${dayRange.start} to ${dayRange.end}`);
         
         const timeBlocks = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
@@ -1216,6 +1229,8 @@ async function getCurrentSchedule(today) {
             sorts: [{ property: 'Start Time', direction: 'ascending' }],
             page_size: 100
         });
+
+        console.log(`Found ${timeBlocks.results.length} blocks in Notion for ${today}`);
 
         if (timeBlocks.results.length === 0) {
             return [];
@@ -1232,14 +1247,24 @@ async function getCurrentSchedule(today) {
 
                 if (!startTime) return null;
 
+                // Convert UTC stored times back to Pacific for display
                 const pacificStartTime = utcToPacificTime(startTime);
                 const pacificEndTime = endTime ? utcToPacificTime(endTime) : '';
 
-                const utcStart = new Date(startTime);
-                const pacificStart = new Date(utcStart.getTime() - (7 * 60 * 60 * 1000));
-                const pacificDateStr = pacificStart.toISOString().split('T')[0];
+                // FIXED: Use proper timezone conversion to check if block is from today
+                const startUTC = new Date(startTime);
+                const pacificDateString = new Intl.DateTimeFormat('en-CA', {
+                    timeZone: 'America/Vancouver',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit'
+                }).format(startUTC);
                 
-                if (pacificDateStr !== today) return null;
+                // Only include blocks that are actually from today Pacific time
+                if (pacificDateString !== today) {
+                    console.log(`Filtering out block "${title}" - Pacific date: ${pacificDateString}, target: ${today}`);
+                    return null;
+                }
 
                 return {
                     time: pacificStartTime,
@@ -1255,6 +1280,7 @@ async function getCurrentSchedule(today) {
             }
         }).filter(block => block !== null);
 
+        console.log(`Returning ${schedule.length} formatted blocks for today`);
         return schedule;
 
     } catch (error) {
@@ -1290,7 +1316,7 @@ module.exports = async function handler(req, res) {
     const startTime = Date.now();
     
     try {
-        console.log('Clean Scheduler v3.0 - Syntax Fixed');
+        console.log('Clean Scheduler v3.1 - Fixed Timezone Handling');
         
         // Critical function validation
         console.log('Function validation:');
@@ -1336,7 +1362,7 @@ module.exports = async function handler(req, res) {
                 lastCreationResult: global.lastCreationResult || null,
                 processingTimeMs: processingTime,
                 timestamp: now.toISOString(),
-                version: '3.0-Clean-Syntax',
+                version: '3.1-Fixed-Timezone',
                 calendarEnabled: calendarEnabled,
                 functionCheck: {
                     getTodaysTasks: typeof getTodaysTasks,
@@ -1374,7 +1400,7 @@ module.exports = async function handler(req, res) {
             details: error.message,
             stack: error.stack,
             meta: {
-                version: '3.0-Clean-Syntax',
+                version: '3.1-Fixed-Timezone',
                 processingTime: processingTime,
                 timestamp: new Date().toISOString(),
                 calendarEnabled: calendarEnabled,
