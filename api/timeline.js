@@ -96,10 +96,19 @@ function getPacificDateRange(pacificDateStr) {
     }
 }
 
-// FIXED: Get today's tasks with correct property names
+// Get today's tasks with correct property names and error handling
 async function getTodaysTasks(today) {
     try {
+        if (!today || typeof today !== 'string') {
+            console.error('Invalid today parameter:', today);
+            return [];
+        }
+        
         console.log('Querying tasks database with correct properties...');
+        
+        const todayPacific = new Date(today + 'T23:59:59');
+        const todayUTC = todayPacific.toISOString().split('T')[0];
+        
         const tasksResponse = await notion.databases.query({
             database_id: TASKS_DB_ID,
             filter: {
@@ -108,7 +117,7 @@ async function getTodaysTasks(today) {
                         or: [
                             {
                                 property: 'Due Date',
-                                date: { on_or_before: today }
+                                date: { on_or_before: todayUTC }
                             },
                             {
                                 property: 'Schedule Today?',
@@ -132,43 +141,77 @@ async function getTodaysTasks(today) {
         console.log(`Found ${tasksResponse.results.length} tasks in database`);
 
         return tasksResponse.results.map(task => {
-            const props = task.properties;
-            const title = props.Name?.title?.[0]?.text?.content || 'Untitled Task';
-            const priority = props['Priority Level']?.select?.name || 'Medium';
-            const type = props.Type?.select?.name || 'Admin';
-            const estimatedTime = props['Estimated Duration']?.number || 30;
-            const dueDate = props['Due Date']?.date?.start;
-            
-            // Determine if it's routine
-            const routine = priority === 'Routine' || type === 'Routine' || title.toLowerCase().includes('routine');
-            
-            // Calculate priority score for intelligent scheduling
-            let priorityScore = 3; // Default medium
-            if (priority === 'High') priorityScore = 1;
-            else if (priority === 'Routine') priorityScore = 2;
-            else if (priority === 'Low') priorityScore = 5;
-            
-            // Boost priority if due soon
-            if (dueDate) {
-                const dueDays = Math.ceil((new Date(dueDate) - new Date(today)) / (1000 * 60 * 60 * 24));
-                if (dueDays <= 0) priorityScore = Math.max(1, priorityScore - 2); // Overdue = highest priority
-                else if (dueDays <= 1) priorityScore = Math.max(1, priorityScore - 1); // Due today/tomorrow
+            try {
+                const props = task.properties;
+                
+                const title = props?.Name?.title?.[0]?.text?.content;
+                if (!title || title.trim() === '') {
+                    console.warn('Skipping task with empty title:', task.id);
+                    return null;
+                }
+                
+                const priority = props['Priority Level']?.select?.name || 'Medium';
+                const type = props.Type?.select?.name || 'Admin';
+                const estimatedTime = props['Estimated Duration']?.number || 30;
+                const dueDate = props['Due Date']?.date?.start;
+                
+                const routine = priority === 'Routine' || 
+                               type === 'Routine' || 
+                               title.toLowerCase().includes('routine') ||
+                               title.toLowerCase().includes('daily');
+                
+                let priorityScore = 3;
+                switch(priority) {
+                    case 'High':
+                        priorityScore = 1;
+                        break;
+                    case 'Routine':
+                        priorityScore = 2;
+                        break;
+                    case 'Medium':
+                        priorityScore = 3;
+                        break;
+                    case 'Low':
+                        priorityScore = 5;
+                        break;
+                    default:
+                        console.warn(`Unknown priority level: ${priority}, using Medium`);
+                        priorityScore = 3;
+                }
+                
+                if (dueDate) {
+                    try {
+                        const dueDateTime = new Date(dueDate);
+                        const todayDateTime = new Date(today);
+                        const dueDays = Math.ceil((dueDateTime - todayDateTime) / (1000 * 60 * 60 * 24));
+                        
+                        if (dueDays <= 0) priorityScore = Math.max(1, priorityScore - 2);
+                        else if (dueDays <= 1) priorityScore = Math.max(1, priorityScore - 1);
+                    } catch (dateError) {
+                        console.warn(`Error parsing due date for task ${title}:`, dateError.message);
+                    }
+                }
+                
+                return {
+                    title: title.trim(),
+                    priority,
+                    priorityScore,
+                    type: type?.toLowerCase() || 'admin',
+                    routine,
+                    estimatedTime: Math.max(30, estimatedTime || 30),
+                    dueDate,
+                    id: task.id,
+                    used: false
+                };
+            } catch (taskError) {
+                console.error('Error processing individual task:', taskError.message);
+                return null;
             }
-            
-            return {
-                title,
-                priority,
-                priorityScore,
-                type: type?.toLowerCase() || 'admin',
-                routine,
-                estimatedTime: Math.max(30, estimatedTime),
-                dueDate,
-                id: task.id,
-                used: false // Track if task has been scheduled
-            };
-        });
+        }).filter(task => task !== null);
+        
     } catch (error) {
         console.error('Error getting tasks:', error.message);
+        console.error('Full error details:', error);
         return [];
     }
 }
@@ -215,88 +258,43 @@ function getMinutesBetween(startTime, endTime) {
     }
 }
 
-// FIXED: Smart task assignment function
-function assignBestTask(availableTasks, blockType, preferredPriority = null) {
-    if (!availableTasks || availableTasks.length === 0) return null;
+// Smart task assignment function with better error handling
+function assignBestTask(availableTasks, blockType) {
+    if (!availableTasks || !Array.isArray(availableTasks) || availableTasks.length === 0) {
+        return null;
+    }
     
-    // Filter unused tasks
-    const unusedTasks = availableTasks.filter(t => !t.used);
-    if (unusedTasks.length === 0) return null;
+    const unusedTasks = availableTasks.filter(t => t && !t.used && t.title);
+    if (unusedTasks.length === 0) {
+        return null;
+    }
     
-    // For Deep Work blocks, prioritize high-priority tasks
+    let selectedTask = null;
+    
     if (blockType === 'Deep Work') {
         const highPriorityTasks = unusedTasks.filter(t => t.priorityScore <= 2);
         if (highPriorityTasks.length > 0) {
-            const task = highPriorityTasks.sort((a, b) => a.priorityScore - b.priorityScore)[0];
-            task.used = true;
-            return task;
+            selectedTask = highPriorityTasks.sort((a, b) => a.priorityScore - b.priorityScore)[0];
         }
     }
     
-    // For routine blocks, prioritize routine tasks
-    if (blockType === 'Routine') {
+    if (blockType === 'Routine' && !selectedTask) {
         const routineTasks = unusedTasks.filter(t => t.routine);
         if (routineTasks.length > 0) {
-            const task = routineTasks.sort((a, b) => a.priorityScore - b.priorityScore)[0];
-            task.used = true;
-            return task;
+            selectedTask = routineTasks.sort((a, b) => a.priorityScore - b.priorityScore)[0];
         }
     }
     
-    // For admin blocks, pick any suitable task
-    const task = unusedTasks.sort((a, b) => a.priorityScore - b.priorityScore)[0];
-    task.used = true;
-    return task;
-}
-
-// FIXED: Smart break logic with better error handling - no breaks immediately after arrival or right before lunch
-function shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, workStartTime, nextMealTime = null) {
-    try {
-        // FIXED: Validate inputs
-        if (!currentTime || !workStartTime || typeof consecutiveWorkMinutes !== 'number') {
-            return false;
-        }
-        
-        const [currentHour, currentMinutes] = currentTime.split(':').map(Number);
-        const [workStartHour] = workStartTime.split(':').map(Number);
-        
-        // Validate parsed numbers
-        if (isNaN(currentHour) || isNaN(currentMinutes) || isNaN(workStartHour)) {
-            console.warn('Invalid time format in shouldInsertBreak');
-            return false;
-        }
-        
-        // No break within first hour of work
-        if (currentHour === workStartHour || (currentHour === workStartHour + 1 && currentMinutes < 30)) {
-            return false;
-        }
-        
-        // No break within 30 minutes of lunch (assume lunch at 12:00)
-        if (nextMealTime) {
-            try {
-                const [mealHour, mealMinutes] = nextMealTime.split(':').map(Number);
-                if (!isNaN(mealHour) && !isNaN(mealMinutes)) {
-                    const minutesToMeal = (mealHour * 60 + mealMinutes) - (currentHour * 60 + currentMinutes);
-                    if (minutesToMeal <= 30 && minutesToMeal > 0) {
-                        return false;
-                    }
-                }
-            } catch (mealError) {
-                console.warn('Error parsing meal time:', mealError.message);
-            }
-        }
-        
-        // Standard break logic
-        const minWorkBeforeBreak = 90; // 1.5 hours minimum
-        const timeSinceLastBreak = lastBreakTime ? 
-            getMinutesBetween(lastBreakTime, currentTime) : 
-            consecutiveWorkMinutes;
-        
-        return consecutiveWorkMinutes >= minWorkBeforeBreak && timeSinceLastBreak >= 90;
-    } catch (error) {
-        console.error('Error in shouldInsertBreak:', error.message);
-        return false; // Fail safe - no break if error
+    if (!selectedTask) {
+        selectedTask = unusedTasks.sort((a, b) => a.priorityScore - b.priorityScore)[0];
     }
+    
+    if (selectedTask) {
+        selectedTask.used = true;
+        console.log(`Assigned task "${selectedTask.title}" (Priority: ${selectedTask.priority}, Score: ${selectedTask.priorityScore}) to ${blockType} block`);
+    }
+    
+    return selectedTask;
 }
 
 // Work shift detection
@@ -357,7 +355,7 @@ async function getWorkShift(today) {
     }
 }
 
-// Get morning log data
+// Get morning log data using ACTUAL properties from Daily Logs
 async function getEnhancedMorningLog(today) {
     const defaultData = {
         wakeTime: '04:30',
@@ -365,10 +363,15 @@ async function getEnhancedMorningLog(today) {
         mood: 'Steady',
         focusCapacity: 'Normal',
         socialBattery: 'Full',
-        sleepQuality: 7
+        sleepQuality: 7,
+        sleepHours: 7,
+        bodyStatus: 'Normal',
+        stressLevel: 'Normal',
+        weatherImpact: 'None'
     };
     
     try {
+        console.log('Getting today\'s morning log with ALL parameters for intelligent scheduling...');
         const morningLogResponse = await notion.databases.query({
             database_id: DAILY_LOGS_DB_ID,
             filter: { property: 'Date', date: { equals: today } },
@@ -396,9 +399,24 @@ async function getEnhancedMorningLog(today) {
         data.mood = log['Mood']?.select?.name || 'Steady';
         data.focusCapacity = log['Focus Capacity']?.select?.name || 'Normal';
         data.socialBattery = log['Social Battery']?.select?.name || 'Full';
-        data.sleepQuality = log['Sleep Quality']?.number || 7;
+        data.bodyStatus = log['Body Status']?.select?.name || 'Normal';
+        data.stressLevel = log['Stress Level']?.select?.name || 'Normal';
+        data.weatherImpact = log['Weather Impact']?.select?.name || 'None';
         
-        console.log('Successfully parsed morning log data');
+        data.sleepQuality = log['Sleep Quality']?.number || 7;
+        data.sleepHours = log['Sleep Hours']?.number || 7;
+        
+        console.log('Parsed comprehensive morning log data:', {
+            energy: data.energy,
+            mood: data.mood,
+            focus: data.focusCapacity,
+            social: data.socialBattery,
+            body: data.bodyStatus,
+            stress: data.stressLevel,
+            sleepQuality: data.sleepQuality,
+            sleepHours: data.sleepHours
+        });
+        
         return data;
         
     } catch (error) {
@@ -407,9 +425,8 @@ async function getEnhancedMorningLog(today) {
     }
 }
 
-// COMPLETELY REWRITTEN: Intelligent work day schedule with ROBUST error handling
+// Intelligent work day schedule using REAL task data and morning log
 function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
-    // CRITICAL: Input validation to prevent crashes
     if (!wakeTime || !workShift || !morningData) {
         console.error('Missing required parameters for work day schedule');
         return [];
@@ -420,7 +437,6 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
         allTasks = [];
     }
     
-    // FIXED: Validate morning data properties with defaults
     const safeData = {
         energy: Math.max(1, Math.min(10, morningData.energy || 7)),
         focusCapacity: morningData.focusCapacity || 'Normal',
@@ -432,68 +448,26 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
         sleepQuality: Math.max(1, Math.min(10, morningData.sleepQuality || 7))
     };
     
-    console.log(`Creating INTELLIGENT work day schedule based on validated morning log data:`);
-    console.log(`- Energy: ${safeData.energy}/10`);
-    console.log(`- Focus: ${safeData.focusCapacity}`);
-    console.log(`- Mood: ${safeData.mood}`);
-    console.log(`- Body: ${safeData.bodyStatus}`);
-    console.log(`- Stress: ${safeData.stressLevel}`);
-    console.log(`- Sleep: ${safeData.sleepHours}h @ quality ${safeData.sleepQuality}/10`);
-    console.log(`- Available tasks: ${allTasks.length}`);
+    console.log(`Creating work day schedule - Energy: ${safeData.energy}/10, Focus: ${safeData.focusCapacity}, Tasks: ${allTasks.length}`);
     
     let schedule = [];
     let currentTime = wakeTime;
-    let consecutiveWorkMinutes = 0;
-    let lastBreakTime = null;
     
-    // FIXED: Create separate task arrays to avoid reference issues
     const tasksCopy = allTasks.map(t => ({...t, used: false}));
     
-    // INTELLIGENT PARAMETERS based on validated morning log
     const energyLevel = safeData.energy;
-    const isHighEnergy = energyLevel >= 8;
-    const isMediumEnergy = energyLevel >= 6;
-    const isLowEnergy = energyLevel < 6;
-    
     const canDeepFocus = safeData.focusCapacity === 'Sharp' && energyLevel >= 7;
     const needsFrequentBreaks = safeData.stressLevel === 'Maxed Out' || 
                                 safeData.bodyStatus === 'Tired' || 
                                 safeData.sleepHours < 6;
-    const socialCapable = safeData.socialBattery !== 'Drained';
     
-    // Calculate break frequency based on conditions
-    const breakFrequency = needsFrequentBreaks ? 60 : // Every hour if stressed/tired
-                          isLowEnergy ? 75 : // Every 1.25 hours if low energy
-                          90; // Standard 1.5 hours
+    const breakFrequency = needsFrequentBreaks ? 60 : (energyLevel < 6 ? 75 : 90);
     
-    console.log(`Intelligent parameters: DeepFocus=${canDeepFocus}, FrequentBreaks=${needsFrequentBreaks}, BreakFreq=${breakFrequency}min`);
-    
-    // Separate tasks by priority and type - FIXED: Use tasksCopy
     const highPriorityTasks = tasksCopy.filter(t => t.priorityScore <= 2).sort((a, b) => a.priorityScore - b.priorityScore);
     const routineTasks = tasksCopy.filter(t => t.routine).sort((a, b) => a.priorityScore - b.priorityScore);
     const regularTasks = tasksCopy.filter(t => !t.routine && t.priorityScore > 2).sort((a, b) => a.priorityScore - b.priorityScore);
     
     console.log(`Task breakdown: ${highPriorityTasks.length} high priority, ${routineTasks.length} routine, ${regularTasks.length} regular`);
-    
-    // FIXED: Helper function for safe break insertion
-    function shouldInsertBreakSafe(currentTime, consecutiveWork, targetEndTime) {
-        try {
-            // Don't break within first hour of work
-            const workStartHour = parseInt(workShift.startTime.split(':')[0]);
-            const currentHour = parseInt(currentTime.split(':')[0]);
-            if (currentHour <= workStartHour + 1) return false;
-            
-            // Don't break too close to meal times
-            const minutesToEnd = getMinutesBetween(currentTime, targetEndTime);
-            if (minutesToEnd <= 30) return false;
-            
-            // Check if break is needed based on work duration
-            return consecutiveWork >= breakFrequency && minutesToEnd >= 45;
-        } catch (error) {
-            console.error('Error in break logic:', error.message);
-            return false;
-        }
-    }
     
     // Morning routine
     schedule.push({
@@ -516,12 +490,12 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
         energy: 'Med'
     });
     currentTime = addMinutes(currentTime, 30);
-    consecutiveWorkMinutes = 30;
     
-    // ROUTINE TASKS PHASE (Until 10 AM) - Schedule REAL routine tasks
+    let consecutiveWorkMinutes = 30;
+    
+    // Routine tasks phase (until 10 AM)
     const routineEndTime = '10:00';
-    let routineLoopSafety = 0;
-    while (getMinutesBetween(currentTime, routineEndTime) >= 30 && routineLoopSafety < 10) {
+    while (getMinutesBetween(currentTime, routineEndTime) >= 30) {
         const nextRoutineTask = assignBestTask(routineTasks, 'Routine');
         
         if (nextRoutineTask) {
@@ -534,9 +508,8 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                 energy: 'Med',
                 taskId: nextRoutineTask.id
             });
-            console.log(`✓ Scheduled routine task: ${nextRoutineTask.title} (Priority: ${nextRoutineTask.priority})`);
+            console.log(`✓ Scheduled routine task: ${nextRoutineTask.title}`);
         } else {
-            // No more routine tasks, schedule admin
             schedule.push({
                 title: 'Morning Admin & Communications',
                 start: currentTime,
@@ -550,11 +523,9 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
         currentTime = addMinutes(currentTime, 30);
         consecutiveWorkMinutes += 30;
         
-        // FIXED: Safe break logic
-        if (shouldInsertBreakSafe(currentTime, consecutiveWorkMinutes, routineEndTime)) {
-            const breakType = needsFrequentBreaks ? 'Recovery Break' : 'Energy Break';
+        if (consecutiveWorkMinutes >= breakFrequency && getMinutesBetween(currentTime, routineEndTime) >= 45) {
             schedule.push({
-                title: breakType,
+                title: 'Energy Break',
                 start: currentTime,
                 duration: 15,
                 type: 'Events',
@@ -562,19 +533,16 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                 energy: 'Low'
             });
             currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
-            console.log(`✓ Inserted ${breakType} (stress/energy management)`);
+            console.log('✓ Inserted Energy Break');
         }
-        routineLoopSafety++;
     }
     currentTime = routineEndTime;
     consecutiveWorkMinutes = 0;
     
-    // PEAK FOCUS PHASE (10 AM - 12 PM) - Schedule HIGH PRIORITY TASKS
+    // Peak focus phase (10 AM - 12 PM)
     const deepWorkEnd = '12:00';
-    let focusLoopSafety = 0;
-    while (getMinutesBetween(currentTime, deepWorkEnd) >= 30 && focusLoopSafety < 10) {
+    while (getMinutesBetween(currentTime, deepWorkEnd) >= 30) {
         const highPriorityTask = assignBestTask(highPriorityTasks, 'Deep Work');
         
         if (highPriorityTask && canDeepFocus) {
@@ -587,9 +555,8 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                 energy: 'High',
                 taskId: highPriorityTask.id
             });
-            console.log(`✓ Scheduled HIGH PRIORITY task: ${highPriorityTask.title} (Priority: ${highPriorityTask.priority}, Due: ${highPriorityTask.dueDate || 'None'})`);
+            console.log(`✓ Scheduled HIGH PRIORITY task: ${highPriorityTask.title}`);
         } else if (canDeepFocus) {
-            // No high priority tasks left, but can still do deep work
             const anyUrgentTask = assignBestTask([...regularTasks, ...tasksCopy.filter(t => !t.used)], 'Deep Work');
             if (anyUrgentTask) {
                 schedule.push({
@@ -603,7 +570,6 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                 });
                 console.log(`✓ Scheduled deep work task: ${anyUrgentTask.title}`);
             } else {
-                // Only create generic deep focus if NO tasks available
                 schedule.push({
                     title: 'Deep Focus Session',
                     start: currentTime,
@@ -615,7 +581,6 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                 console.log('✓ Created generic Deep Focus (no tasks available)');
             }
         } else {
-            // Low energy/focus - assign any available task as admin work
             const anyTask = assignBestTask([...tasksCopy.filter(t => !t.used)], 'Admin');
             if (anyTask) {
                 schedule.push({
@@ -627,7 +592,7 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                     energy: 'Med',
                     taskId: anyTask.id
                 });
-                console.log(`✓ Scheduled admin task (low energy): ${anyTask.title}`);
+                console.log(`✓ Scheduled admin task: ${anyTask.title}`);
             } else {
                 schedule.push({
                     title: 'Project Work',
@@ -643,9 +608,7 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
         currentTime = addMinutes(currentTime, 30);
         consecutiveWorkMinutes += 30;
         
-        // Intensive work break logic
-        if (shouldInsertBreakSafe(currentTime, consecutiveWorkMinutes, deepWorkEnd) && 
-            consecutiveWorkMinutes >= (canDeepFocus ? 90 : 60)) {
+        if (consecutiveWorkMinutes >= (canDeepFocus ? 90 : 60) && getMinutesBetween(currentTime, deepWorkEnd) >= 45) {
             schedule.push({
                 title: 'Focus Recovery Break',
                 start: currentTime,
@@ -655,16 +618,14 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                 energy: 'Low'
             });
             currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
-            console.log('✓ Inserted Focus Recovery Break (intensive work)');
+            console.log('✓ Inserted Focus Recovery Break');
         }
-        focusLoopSafety++;
     }
     currentTime = deepWorkEnd;
     
-    // LUNCH BREAK - Adjusted based on energy and stress
-    const lunchDuration = (isLowEnergy || safeData.stressLevel === 'Maxed Out') ? 75 : 60;
+    // Lunch break
+    const lunchDuration = (energyLevel <= 5 || safeData.stressLevel === 'Maxed Out') ? 75 : 60;
     schedule.push({
         title: lunchDuration > 60 ? 'Extended Lunch & Recovery' : 'Lunch Break',
         start: currentTime,
@@ -675,17 +636,14 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
     });
     currentTime = addMinutes(currentTime, lunchDuration);
     consecutiveWorkMinutes = 0;
-    lastBreakTime = currentTime;
     
-    // AFTERNOON WORK PHASE (Post-lunch - 16:00) - Remaining tasks based on energy
+    // Afternoon work (post-lunch to 16:00)
     const afternoonWorkEnd = '16:00';
-    let afternoonLoopSafety = 0;
-    while (getMinutesBetween(currentTime, afternoonWorkEnd) >= 30 && afternoonLoopSafety < 15) {
+    while (getMinutesBetween(currentTime, afternoonWorkEnd) >= 30) {
         const remainingTask = assignBestTask([...regularTasks, ...tasksCopy.filter(t => !t.used)], 'Admin');
         
         if (remainingTask) {
-            // Determine block type based on task priority and afternoon energy
-            const blockType = (remainingTask.priorityScore <= 2 && isMediumEnergy) ? 'Deep Work' : 'Admin';
+            const blockType = (remainingTask.priorityScore <= 2 && energyLevel >= 6) ? 'Deep Work' : 'Admin';
             schedule.push({
                 title: remainingTask.title,
                 start: currentTime,
@@ -695,41 +653,19 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                 energy: blockType === 'Deep Work' ? 'High' : 'Med',
                 taskId: remainingTask.id
             });
-            console.log(`✓ Scheduled afternoon task: ${remainingTask.title} as ${blockType}`);
+            console.log(`✓ Scheduled afternoon task: ${remainingTask.title}`);
         } else {
-            // No more tasks - create contextual work blocks
-            try {
-                const currentHour = parseInt(currentTime.split(':')[0]);
-                if (currentHour === 13 && isMediumEnergy) {
-                    schedule.push({
-                        title: 'Afternoon Project Focus',
-                        start: currentTime,
-                        duration: 30,
-                        type: 'Admin',
-                        context: 'Work',
-                        energy: 'Med'
-                    });
-                } else if (currentHour >= 14 && socialCapable) {
-                    schedule.push({
-                        title: 'Communications & Meetings',
-                        start: currentTime,
-                        duration: 30,
-                        type: 'Meeting',
-                        context: 'Work',
-                        energy: 'Med'
-                    });
-                } else {
-                    schedule.push({
-                        title: 'Administrative Work',
-                        start: currentTime,
-                        duration: 30,
-                        type: 'Admin',
-                        context: 'Work',
-                        energy: 'Med'
-                    });
-                }
-            } catch (timeError) {
-                console.error('Error parsing current time:', timeError.message);
+            const currentHour = parseInt(currentTime.split(':')[0]);
+            if (currentHour === 13 && energyLevel >= 6) {
+                schedule.push({
+                    title: 'Afternoon Project Focus',
+                    start: currentTime,
+                    duration: 30,
+                    type: 'Admin',
+                    context: 'Work',
+                    energy: 'Med'
+                });
+            } else {
                 schedule.push({
                     title: 'Administrative Work',
                     start: currentTime,
@@ -744,9 +680,7 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
         currentTime = addMinutes(currentTime, 30);
         consecutiveWorkMinutes += 30;
         
-        // Afternoon break logic - more conservative, based on stress/energy
-        if (shouldInsertBreakSafe(currentTime, consecutiveWorkMinutes, afternoonWorkEnd) &&
-            (needsFrequentBreaks || consecutiveWorkMinutes >= 90)) {
+        if (consecutiveWorkMinutes >= breakFrequency && getMinutesBetween(currentTime, afternoonWorkEnd) >= 45) {
             schedule.push({
                 title: 'Afternoon Break',
                 start: currentTime,
@@ -756,15 +690,13 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
                 energy: 'Low'
             });
             currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
-            console.log('✓ Inserted Afternoon Break (energy management)');
+            console.log('✓ Inserted Afternoon Break');
         }
-        afternoonLoopSafety++;
     }
     currentTime = afternoonWorkEnd;
     
-    // END OF DAY PHASE (16:00-17:30) - Light tasks only
+    // End of day (16:00-17:30)
     while (getMinutesBetween(currentTime, workShift.endTime) >= 30) {
         const lightTask = assignBestTask(tasksCopy.filter(t => !t.used && t.priorityScore >= 4), 'Admin');
         
@@ -780,31 +712,18 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
             });
             console.log(`✓ Scheduled end-of-day task: ${lightTask.title}`);
         } else {
-            try {
-                const currentHour = parseInt(currentTime.split(':')[0]);
-                const blockTitle = currentHour === 16 ? 'End of Day Admin' : 'Wrap-up & Planning';
-                schedule.push({
-                    title: blockTitle,
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Low'
-                });
-            } catch (timeError) {
-                schedule.push({
-                    title: 'End of Day Wrap-up',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Low'
-                });
-            }
+            schedule.push({
+                title: 'End of Day Wrap-up',
+                start: currentTime,
+                duration: 30,
+                type: 'Admin',
+                context: 'Work',
+                energy: 'Low'
+            });
         }
         currentTime = addMinutes(currentTime, 30);
     }
-    currentTime = workShift.endTime || '17:30'; // Fallback
+    currentTime = workShift.endTime || '17:30';
     
     // Evening routine
     schedule.push({
@@ -817,7 +736,6 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
     });
     currentTime = addMinutes(currentTime, 30);
     
-    // Personal wind-down
     schedule.push({
         title: 'Personal Wind Down',
         start: currentTime,
@@ -828,9 +746,7 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
     });
     currentTime = addMinutes(currentTime, 60);
     
-    // Evening personal time
-    let eveningLoopSafety = 0;
-    while (getMinutesBetween(currentTime, '22:00') >= 30 && eveningLoopSafety < 10) {
+    while (getMinutesBetween(currentTime, '22:00') >= 30) {
         schedule.push({
             title: 'Personal Time',
             start: currentTime,
@@ -840,293 +756,55 @@ function createWorkDaySchedule(wakeTime, workShift, allTasks, morningData) {
             energy: 'Low'
         });
         currentTime = addMinutes(currentTime, 30);
-        eveningLoopSafety++;
     }
     
     const tasksScheduled = tasksCopy.filter(t => t.used).length;
-    console.log(`✅ INTELLIGENT schedule created: ${schedule.length} blocks, ${tasksScheduled}/${allTasks.length} tasks scheduled`);
-    console.log(`✅ Used morning log data for: energy-based focus periods, intelligent break frequency, stress-aware scheduling`);
-    
-    return schedule;
-}
-                });
-                console.log(`✓ Scheduled admin task (low energy): ${anyTask.title}`);
-            } else {
-                schedule.push({
-                    title: 'Project Work',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Med'
-                });
-            }
-        }
-        
-        currentTime = addMinutes(currentTime, 30);
-        consecutiveWorkMinutes += 30;
-        
-        // Intensive work break logic
-        if (consecutiveWorkMinutes >= (canDeepFocus ? 90 : 60) && 
-            getMinutesBetween(currentTime, deepWorkEnd) >= 45) {
-            schedule.push({
-                title: 'Focus Recovery Break',
-                start: currentTime,
-                duration: 15,
-                type: 'Events',
-                context: 'Personal',
-                energy: 'Low'
-            });
-            currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
-            consecutiveWorkMinutes = 0;
-            console.log('✓ Inserted Focus Recovery Break (intensive work)');
-        }
-    }
-    currentTime = deepWorkEnd;
-    
-    // LUNCH BREAK - Adjusted based on energy and stress
-    const lunchDuration = (isLowEnergy || morningData.stressLevel === 'Maxed Out') ? 75 : 60;
-    schedule.push({
-        title: lunchDuration > 60 ? 'Extended Lunch & Recovery' : 'Lunch Break',
-        start: currentTime,
-        duration: lunchDuration,
-        type: 'Events',
-        context: 'Personal',
-        energy: 'Low'
-    });
-    currentTime = addMinutes(currentTime, lunchDuration);
-    consecutiveWorkMinutes = 0;
-    lastBreakTime = currentTime;
-    
-    // AFTERNOON WORK PHASE (Post-lunch - 16:00) - Remaining tasks based on energy
-    const afternoonWorkEnd = '16:00';
-    while (getMinutesBetween(currentTime, afternoonWorkEnd) >= 30) {
-        const remainingTask = assignBestTask([...regularTasks, ...allTasks.filter(t => !t.used)], 'Admin');
-        
-        if (remainingTask) {
-            // Determine block type based on task priority and afternoon energy
-            const blockType = (remainingTask.priorityScore <= 2 && isMediumEnergy) ? 'Deep Work' : 'Admin';
-            schedule.push({
-                title: remainingTask.title,
-                start: currentTime,
-                duration: Math.min(30, remainingTask.estimatedTime),
-                type: blockType,
-                context: 'Work',
-                energy: blockType === 'Deep Work' ? 'High' : 'Med',
-                taskId: remainingTask.id
-            });
-            console.log(`✓ Scheduled afternoon task: ${remainingTask.title} as ${blockType}`);
-        } else {
-            // No more tasks - create contextual work blocks
-            const currentHour = parseInt(currentTime.split(':')[0]);
-            if (currentHour === 13 && isMediumEnergy) {
-                schedule.push({
-                    title: 'Afternoon Project Focus',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Med'
-                });
-            } else if (currentHour >= 14 && socialCapable) {
-                schedule.push({
-                    title: 'Communications & Meetings',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Meeting',
-                    context: 'Work',
-                    energy: 'Med'
-                });
-            } else {
-                schedule.push({
-                    title: 'Administrative Work',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Admin',
-                    context: 'Work',
-                    energy: 'Med'
-                });
-            }
-        }
-        
-        currentTime = addMinutes(currentTime, 30);
-        consecutiveWorkMinutes += 30;
-        
-        // Afternoon break logic - more conservative, based on stress/energy
-        if (consecutiveWorkMinutes >= breakFrequency && 
-            getMinutesBetween(currentTime, afternoonWorkEnd) >= 45 &&
-            (needsFrequentBreaks || consecutiveWorkMinutes >= 90)) {
-            schedule.push({
-                title: 'Afternoon Break',
-                start: currentTime,
-                duration: 15,
-                type: 'Events',
-                context: 'Personal',
-                energy: 'Low'
-            });
-            currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
-            consecutiveWorkMinutes = 0;
-            console.log('✓ Inserted Afternoon Break (energy management)');
-        }
-    }
-    currentTime = afternoonWorkEnd;
-    
-    // END OF DAY PHASE (16:00-17:30) - Light tasks only
-    while (getMinutesBetween(currentTime, workShift.endTime) >= 30) {
-        const lightTask = assignBestTask(allTasks.filter(t => !t.used && t.priorityScore >= 4), 'Admin');
-        
-        if (lightTask) {
-            schedule.push({
-                title: lightTask.title,
-                start: currentTime,
-                duration: Math.min(30, lightTask.estimatedTime),
-                type: 'Admin',
-                context: 'Work',
-                energy: 'Low',
-                taskId: lightTask.id
-            });
-            console.log(`✓ Scheduled end-of-day task: ${lightTask.title}`);
-        } else {
-            const currentHour = parseInt(currentTime.split(':')[0]);
-            const blockTitle = currentHour === 16 ? 'End of Day Admin' : 'Wrap-up & Planning';
-            schedule.push({
-                title: blockTitle,
-                start: currentTime,
-                duration: 30,
-                type: 'Admin',
-                context: 'Work',
-                energy: 'Low'
-            });
-        }
-        currentTime = addMinutes(currentTime, 30);
-    }
-    currentTime = workShift.endTime;
-    
-    // Evening routine
-    schedule.push({
-        title: 'Day Review & Tomorrow Planning',
-        start: currentTime,
-        duration: 30,
-        type: 'Admin',
-        context: 'Personal',
-        energy: 'Low'
-    });
-    currentTime = addMinutes(currentTime, 30);
-    
-    // Personal wind-down
-    schedule.push({
-        title: 'Personal Wind Down',
-        start: currentTime,
-        duration: 60,
-        type: 'Events',
-        context: 'Personal',
-        energy: 'Low'
-    });
-    currentTime = addMinutes(currentTime, 60);
-    
-    // Evening personal time
-    while (getMinutesBetween(currentTime, '22:00') >= 30) {
-        schedule.push({
-            title: 'Personal Time',
-            start: currentTime,
-            duration: 30,
-            type: 'Events',
-            context: 'Personal',
-            energy: 'Low'
-        });
-        currentTime = addMinutes(currentTime, 30);
-    }
-    
-    const tasksScheduled = allTasks.filter(t => t.used).length;
-    console.log(`✅ INTELLIGENT schedule created: ${schedule.length} blocks, ${tasksScheduled}/${allTasks.length} tasks scheduled`);
-    console.log(`✅ Used morning log data for: energy-based focus periods, intelligent break frequency, stress-aware scheduling`);
-    
-    return schedule;
-}.filter(t => t.priorityScore >= 4), 'Admin');
-        
-        if (lightTask) {
-            schedule.push({
-                title: lightTask.title,
-                start: currentTime,
-                duration: 30,
-                type: 'Admin',
-                context: 'Work',
-                energy: 'Low',
-                taskId: lightTask.id
-            });
-            console.log(`Scheduled end-of-day task: ${lightTask.title}`);
-        } else {
-            const currentHour = parseInt(currentTime.split(':')[0]);
-            const blockTitle = currentHour === 16 ? 'End of Day Admin' : 'Wrap-up & Planning';
-            schedule.push({
-                title: blockTitle,
-                start: currentTime,
-                duration: 30,
-                type: 'Admin',
-                context: 'Work',
-                energy: 'Low'
-            });
-        }
-        currentTime = addMinutes(currentTime, 30);
-    }
-    currentTime = workShift.endTime;
-    
-    // Evening routine
-    schedule.push({
-        title: 'Day Review & Tomorrow Planning',
-        start: currentTime,
-        duration: 30,
-        type: 'Admin',
-        context: 'Personal',
-        energy: 'Low'
-    });
-    currentTime = addMinutes(currentTime, 30);
-    
-    // Personal wind-down
-    schedule.push({
-        title: 'Personal Wind Down',
-        start: currentTime,
-        duration: 60,
-        type: 'Events',
-        context: 'Personal',
-        energy: 'Low'
-    });
-    currentTime = addMinutes(currentTime, 60);
-    
-    // Evening personal time
-    while (getMinutesBetween(currentTime, '22:00') >= 30) {
-        schedule.push({
-            title: 'Personal Time',
-            start: currentTime,
-            duration: 30,
-            type: 'Events',
-            context: 'Personal',
-            energy: 'Low'
-        });
-        currentTime = addMinutes(currentTime, 30);
-    }
-    
-    const tasksScheduled = allTasks.filter(t => t.used).length;
-    console.log(`Created intelligent schedule with ${schedule.length} blocks, scheduled ${tasksScheduled}/${allTasks.length} tasks`);
+    console.log(`✅ Work schedule created: ${schedule.length} blocks, ${tasksScheduled}/${allTasks.length} tasks scheduled`);
     
     return schedule;
 }
 
-// FIXED: Home day schedule with proper task assignment
-function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
-    console.log('Creating home day schedule with intelligent task integration');
-    console.log(`Available tasks: ${allTasks.length} total`);
+// Home day schedule using REAL task data and morning log
+function createHomeDaySchedule(wakeTime, allTasks, morningData) {
+    if (!wakeTime || !morningData) {
+        console.error('Missing required parameters for home day schedule');
+        return [];
+    }
+    
+    if (!Array.isArray(allTasks)) {
+        console.error('allTasks is not an array:', typeof allTasks);
+        allTasks = [];
+    }
+    
+    const safeData = {
+        energy: Math.max(1, Math.min(10, morningData.energy || 7)),
+        focusCapacity: morningData.focusCapacity || 'Normal',
+        mood: morningData.mood || 'Steady',
+        bodyStatus: morningData.bodyStatus || 'Normal',
+        stressLevel: morningData.stressLevel || 'Normal',
+        socialBattery: morningData.socialBattery || 'Full',
+        sleepHours: Math.max(4, Math.min(12, morningData.sleepHours || 7)),
+        sleepQuality: Math.max(1, Math.min(10, morningData.sleepQuality || 7))
+    };
+    
+    console.log(`Creating home day schedule - Energy: ${safeData.energy}/10, Focus: ${safeData.focusCapacity}, Tasks: ${allTasks.length}`);
     
     let schedule = [];
     let currentTime = wakeTime;
-    let consecutiveWorkMinutes = 0;
-    let lastBreakTime = null;
     
-    // Separate tasks
-    const routineTasks = allTasks.filter(t => t.routine);
-    const projectTasks = allTasks.filter(t => !t.routine);
+    const tasksCopy = allTasks.map(t => ({...t, used: false}));
+    
+    const energyLevel = safeData.energy;
+    const canDeepFocus = safeData.focusCapacity === 'Sharp' && energyLevel >= 7;
+    const needsFrequentBreaks = safeData.stressLevel === 'Maxed Out' || 
+                                safeData.bodyStatus === 'Tired' || 
+                                safeData.sleepHours < 6;
+    
+    const breakFrequency = needsFrequentBreaks ? 60 : (energyLevel < 6 ? 75 : 90);
+    
+    const highPriorityTasks = tasksCopy.filter(t => t.priorityScore <= 2).sort((a, b) => a.priorityScore - b.priorityScore);
+    const routineTasks = tasksCopy.filter(t => t.routine).sort((a, b) => a.priorityScore - b.priorityScore);
+    const regularTasks = tasksCopy.filter(t => !t.routine && t.priorityScore > 2).sort((a, b) => a.priorityScore - b.priorityScore);
     
     // Morning routine
     schedule.push({
@@ -1135,38 +813,38 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
         duration: 60,
         type: 'Events',
         context: 'Personal',
-        energy: 'Medium'
+        energy: 'Med'
     });
     currentTime = addMinutes(currentTime, 60);
     
-    // Morning planning
     schedule.push({
         title: 'Morning Planning & Setup',
         start: currentTime,
         duration: 30,
         type: 'Admin',
         context: 'Personal',
-        energy: 'Medium'
+        energy: 'Med'
     });
     currentTime = addMinutes(currentTime, 30);
-    consecutiveWorkMinutes = 30;
     
-    // Routine tasks (must complete by 10 AM)
+    let consecutiveWorkMinutes = 30;
+    
+    // Routine tasks (until 10 AM)
     const routineEndTime = '10:00';
     while (getMinutesBetween(currentTime, routineEndTime) >= 30) {
-        const routineTask = assignBestTask(routineTasks, 'Routine');
+        const nextRoutineTask = assignBestTask(routineTasks, 'Routine');
         
-        if (routineTask) {
+        if (nextRoutineTask) {
             schedule.push({
-                title: routineTask.title,
+                title: nextRoutineTask.title,
                 start: currentTime,
-                duration: 30,
+                duration: Math.min(30, nextRoutineTask.estimatedTime || 30),
                 type: 'Routine',
                 context: 'Work',
-                energy: 'Medium',
-                taskId: routineTask.id
+                energy: 'Med',
+                taskId: nextRoutineTask.id
             });
-            console.log(`Scheduled routine task: ${routineTask.title}`);
+            console.log(`✓ Scheduled routine task: ${nextRoutineTask.title}`);
         } else {
             schedule.push({
                 title: 'Morning Admin Tasks',
@@ -1174,16 +852,14 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
                 duration: 30,
                 type: 'Admin',
                 context: 'Personal',
-                energy: 'Medium'
+                energy: 'Med'
             });
         }
         
         currentTime = addMinutes(currentTime, 30);
         consecutiveWorkMinutes += 30;
         
-        // Smart break for home days
-        if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, wakeTime, '12:00') && 
-            getMinutesBetween(currentTime, routineEndTime) >= 45) {
+        if (consecutiveWorkMinutes >= breakFrequency && getMinutesBetween(currentTime, routineEndTime) >= 45) {
             schedule.push({
                 title: 'Morning Break',
                 start: currentTime,
@@ -1193,53 +869,67 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
                 energy: 'Low'
             });
             currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
+            console.log('✓ Inserted Morning Break');
         }
     }
     currentTime = routineEndTime;
     consecutiveWorkMinutes = 0;
     
-    // Deep work blocks based on energy (10 AM - 12 PM)
+    // Focus work (10 AM - 12 PM)
     const deepWorkEnd = '12:00';
     while (getMinutesBetween(currentTime, deepWorkEnd) >= 30) {
-        if (energy >= 7 && focusCapacity === 'Sharp') {
-            const highPriorityTask = assignBestTask(allTasks, 'Deep Work');
+        if (canDeepFocus) {
+            const highPriorityTask = assignBestTask(highPriorityTasks, 'Deep Work');
             if (highPriorityTask) {
                 schedule.push({
                     title: highPriorityTask.title,
                     start: currentTime,
-                    duration: 30,
+                    duration: Math.min(30, highPriorityTask.estimatedTime || 30),
                     type: 'Deep Work',
                     context: 'Work',
                     energy: 'High',
                     taskId: highPriorityTask.id
                 });
-                console.log(`Scheduled deep work task: ${highPriorityTask.title}`);
+                console.log(`✓ Scheduled HIGH PRIORITY deep work: ${highPriorityTask.title}`);
             } else {
-                schedule.push({
-                    title: 'Deep Focus Session',
-                    start: currentTime,
-                    duration: 30,
-                    type: 'Deep Work',
-                    context: 'Work',
-                    energy: 'High'
-                });
+                const anyUrgentTask = assignBestTask([...regularTasks, ...tasksCopy.filter(t => !t.used)], 'Deep Work');
+                if (anyUrgentTask) {
+                    schedule.push({
+                        title: anyUrgentTask.title,
+                        start: currentTime,
+                        duration: Math.min(30, anyUrgentTask.estimatedTime || 30),
+                        type: 'Deep Work',
+                        context: 'Work',
+                        energy: 'High',
+                        taskId: anyUrgentTask.id
+                    });
+                    console.log(`✓ Scheduled deep work task: ${anyUrgentTask.title}`);
+                } else {
+                    schedule.push({
+                        title: 'Deep Focus Session',
+                        start: currentTime,
+                        duration: 30,
+                        type: 'Deep Work',
+                        context: 'Work',
+                        energy: 'High'
+                    });
+                    console.log('✓ Created generic Deep Focus (no tasks available)');
+                }
             }
-            consecutiveWorkMinutes += 30;
         } else {
-            const anyTask = assignBestTask(allTasks, 'Admin');
+            const anyTask = assignBestTask([...tasksCopy.filter(t => !t.used)], 'Admin');
             if (anyTask) {
                 schedule.push({
                     title: anyTask.title,
                     start: currentTime,
-                    duration: 30,
+                    duration: Math.min(30, anyTask.estimatedTime || 30),
                     type: 'Admin',
                     context: 'Work',
-                    energy: 'Medium',
+                    energy: 'Med',
                     taskId: anyTask.id
                 });
-                console.log(`Scheduled admin task: ${anyTask.title}`);
+                console.log(`✓ Scheduled admin task: ${anyTask.title}`);
             } else {
                 schedule.push({
                     title: 'Project Work',
@@ -1247,17 +937,15 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
                     duration: 30,
                     type: 'Admin',
                     context: 'Work',
-                    energy: 'Medium'
+                    energy: 'Med'
                 });
             }
-            consecutiveWorkMinutes += 30;
         }
         
         currentTime = addMinutes(currentTime, 30);
+        consecutiveWorkMinutes += 30;
         
-        // Smart break for home days
-        if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, wakeTime, '12:00') && 
-            getMinutesBetween(currentTime, deepWorkEnd) >= 45) {
+        if (consecutiveWorkMinutes >= (canDeepFocus ? 90 : 60) && getMinutesBetween(currentTime, deepWorkEnd) >= 45) {
             schedule.push({
                 title: 'Focus Break',
                 start: currentTime,
@@ -1267,8 +955,8 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
                 energy: 'Low'
             });
             currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
+            console.log('✓ Inserted Focus Break');
         }
     }
     currentTime = deepWorkEnd;
@@ -1284,24 +972,23 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
     });
     currentTime = addMinutes(currentTime, 60);
     consecutiveWorkMinutes = 0;
-    lastBreakTime = currentTime; // Lunch counts as break
     
     // Afternoon work (13:00 - 15:30)
     const afternoonWorkEnd = '15:30';
     while (getMinutesBetween(currentTime, afternoonWorkEnd) >= 30) {
-        const remainingTask = assignBestTask(allTasks, 'Admin');
+        const remainingTask = assignBestTask([...regularTasks, ...tasksCopy.filter(t => !t.used)], 'Admin');
         
         if (remainingTask) {
             schedule.push({
                 title: remainingTask.title,
                 start: currentTime,
-                duration: 30,
+                duration: Math.min(30, remainingTask.estimatedTime || 30),
                 type: 'Admin',
                 context: 'Work',
-                energy: 'Medium',
+                energy: 'Med',
                 taskId: remainingTask.id
             });
-            console.log(`Scheduled afternoon task: ${remainingTask.title}`);
+            console.log(`✓ Scheduled afternoon task: ${remainingTask.title}`);
         } else {
             schedule.push({
                 title: 'Afternoon Project Work',
@@ -1309,16 +996,14 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
                 duration: 30,
                 type: 'Admin',
                 context: 'Work',
-                energy: 'Medium'
+                energy: 'Med'
             });
         }
         
         currentTime = addMinutes(currentTime, 30);
         consecutiveWorkMinutes += 30;
         
-        // Afternoon break logic
-        if (shouldInsertBreak(currentTime, lastBreakTime, consecutiveWorkMinutes, wakeTime, null) && 
-            getMinutesBetween(currentTime, afternoonWorkEnd) >= 45) {
+        if (consecutiveWorkMinutes >= breakFrequency && getMinutesBetween(currentTime, afternoonWorkEnd) >= 45) {
             schedule.push({
                 title: 'Afternoon Break',
                 start: currentTime,
@@ -1328,8 +1013,8 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
                 energy: 'Low'
             });
             currentTime = addMinutes(currentTime, 15);
-            lastBreakTime = currentTime;
             consecutiveWorkMinutes = 0;
+            console.log('✓ Inserted Afternoon Break');
         }
     }
     currentTime = afternoonWorkEnd;
@@ -1341,7 +1026,7 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
         duration: 120,
         type: 'Events',
         context: 'Family',
-        energy: 'Medium'
+        energy: 'Med'
     });
     currentTime = addMinutes(currentTime, 120);
     
@@ -1367,7 +1052,6 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
     });
     currentTime = addMinutes(currentTime, 30);
     
-    // Personal wind-down
     schedule.push({
         title: 'Personal Wind Down',
         start: currentTime,
@@ -1378,7 +1062,6 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
     });
     currentTime = addMinutes(currentTime, 60);
     
-    // Evening personal time
     while (getMinutesBetween(currentTime, '22:00') >= 30) {
         schedule.push({
             title: 'Personal Time',
@@ -1391,8 +1074,8 @@ function createHomeDaySchedule(wakeTime, allTasks, energy, focusCapacity) {
         currentTime = addMinutes(currentTime, 30);
     }
     
-    const tasksScheduled = allTasks.filter(t => t.used).length;
-    console.log(`Created home day schedule with ${schedule.length} blocks, scheduled ${tasksScheduled}/${allTasks.length} tasks`);
+    const tasksScheduled = tasksCopy.filter(t => t.used).length;
+    console.log(`✅ Home schedule created: ${schedule.length} blocks, ${tasksScheduled}/${allTasks.length} tasks scheduled`);
     
     return schedule;
 }
@@ -1427,36 +1110,48 @@ async function clearAutoFilledBlocks(today) {
     }
 }
 
-// FIXED: Create time blocks with proper task relations
+// Create time blocks with correct Energy Requirements values
 async function createTimeBlocks(schedule, today, dailyLogId) {
     console.log(`Creating ${schedule.length} time blocks with task relations...`);
     
     const results = [];
     
+    const energyMapping = {
+        'Low': 'Low',
+        'Medium': 'Med',
+        'High': 'High'
+    };
+    
     for (const block of schedule) {
         try {
+            if (!block || !block.title || !block.start || !block.duration) {
+                console.warn('Skipping invalid block:', block);
+                continue;
+            }
+            
             const endTime = addMinutes(block.start, block.duration);
             const startUTC = pacificTimeToUTC(today, block.start);
             const endUTC = pacificTimeToUTC(today, endTime);
+            
+            const mappedEnergy = energyMapping[block.energy] || 'Med';
             
             const properties = {
                 Title: { title: [{ text: { content: block.title } }] },
                 Type: { select: { name: block.type } },
                 Context: { select: { name: block.context } },
-                'Energy Requirements': { select: { name: block.energy } },
+                'Energy Requirements': { select: { name: mappedEnergy } },
                 Status: { select: { name: 'Active' } },
                 'Start Time': { date: { start: startUTC } },
                 'End Time': { date: { start: endUTC } },
                 'Auto-Filled': { checkbox: true }
             };
             
-            // FIXED: Link task to time block if taskId exists
-            if (block.taskId) {
+            if (block.taskId && typeof block.taskId === 'string') {
                 properties['Tasks'] = { relation: [{ id: block.taskId }] };
                 console.log(`Linking task ${block.taskId} to time block "${block.title}"`);
             }
             
-            if (dailyLogId) {
+            if (dailyLogId && typeof dailyLogId === 'string') {
                 properties['Daily Logs'] = { relation: [{ id: dailyLogId }] };
             }
             
@@ -1471,15 +1166,16 @@ async function createTimeBlocks(schedule, today, dailyLogId) {
                 endTime: endTime,
                 type: block.type,
                 context: block.context,
+                energy: mappedEnergy,
                 taskId: block.taskId || null,
                 notionId: timeBlockResponse.id,
                 status: 'created'
             });
             
         } catch (error) {
-            console.error(`Failed to create block "${block.title}":`, error.message);
+            console.error(`Failed to create block "${block?.title || 'Unknown'}":`, error.message);
             results.push({
-                title: block.title,
+                title: block?.title || 'Unknown Block',
                 error: error.message,
                 status: 'failed'
             });
@@ -1504,43 +1200,30 @@ async function getDailyLogId(today) {
     }
 }
 
-// FIXED: Main workflow with comprehensive error handling and input validation
+// Main workflow with comprehensive error handling and input validation
 async function runEnhancedScheduler(today) {
     console.log('Starting FIXED enhanced scheduler workflow...');
     
-    // FIXED: Input validation
     if (!today || typeof today !== 'string') {
         throw new Error('Invalid today parameter - must be a valid date string');
     }
     
-    // FIXED: Initialize global result to prevent undefined access
-    if (typeof global === 'undefined') {
-        globalThis.lastCreationResult = null;
-    } else {
-        global.lastCreationResult = null;
-    }
+    let lastCreationResult = null;
     
     try {
-        // Step 1: Clear existing blocks
-        console.log('Step 1: Clearing existing blocks...');
         await clearAutoFilledBlocks(today);
         
-        // Step 2: Get morning log with input validation
-        console.log('Step 2: Getting morning log...');
         const morningData = await getEnhancedMorningLog(today);
         if (!morningData) {
             throw new Error('Failed to get morning log data');
         }
         
-        // Step 3: Check work schedule with validation
-        console.log('Step 3: Checking work schedule...');
         const workShift = await getWorkShift(today);
         if (!workShift) {
             throw new Error('Failed to get work shift data');
         }
         
-        // Step 4: Get tasks with correct property mapping
-        console.log('Step 4: Fetching tasks with CORRECT property names...');
+        console.log('Fetching tasks with CORRECT property names...');
         const allTasks = await getTodaysTasks(today);
         
         if (!Array.isArray(allTasks)) {
@@ -1550,8 +1233,7 @@ async function runEnhancedScheduler(today) {
         
         console.log(`Successfully fetched ${allTasks.length} tasks for intelligent scheduling`);
         
-        // Step 5: Generate intelligent schedule with validation
-        console.log('Step 5: Generating intelligent schedule using REAL morning log data...');
+        console.log('Generating intelligent schedule using REAL morning log data...');
         let schedule;
         
         if (workShift.isWorkDay) {
@@ -1560,41 +1242,36 @@ async function runEnhancedScheduler(today) {
                 morningData.wakeTime, 
                 workShift, 
                 allTasks,
-                morningData // Pass entire morning data object
+                morningData
             );
         } else {
             console.log('Creating INTELLIGENT home day schedule...');
             schedule = createHomeDaySchedule(
                 morningData.wakeTime, 
                 allTasks,
-                morningData // Pass entire morning data object
+                morningData
             );
         }
         
-        // FIXED: Validate schedule was created properly
         if (!Array.isArray(schedule) || schedule.length === 0) {
             throw new Error('Schedule generation failed - no blocks created');
         }
         
         console.log(`Generated schedule with ${schedule.length} blocks`);
         
-        // Step 6: Create blocks in Notion with task relations
-        console.log('Step 6: Creating time blocks in Notion...');
+        console.log('Creating time blocks in Notion...');
         const dailyLogId = await getDailyLogId(today);
         const createdBlocks = await createTimeBlocks(schedule, today, dailyLogId);
         
-        // FIXED: Validate block creation results
         if (!Array.isArray(createdBlocks)) {
             throw new Error('Block creation returned invalid results');
         }
         
-        // Count task assignments
         const tasksScheduled = createdBlocks.filter(b => b && b.taskId).length;
         const successfulBlocks = createdBlocks.filter(b => b && b.status === 'created').length;
         const failedBlocks = createdBlocks.filter(b => b && b.status === 'failed').length;
         
-        // FIXED: Set results with better error handling
-        const resultData = {
+        lastCreationResult = {
             success: successfulBlocks,
             failed: failedBlocks,
             tasksScheduled: tasksScheduled,
@@ -1606,11 +1283,10 @@ async function runEnhancedScheduler(today) {
             timestamp: new Date().toISOString()
         };
         
-        // Set global result safely
         if (typeof global !== 'undefined') {
-            global.lastCreationResult = resultData;
+            global.lastCreationResult = lastCreationResult;
         } else {
-            globalThis.lastCreationResult = resultData;
+            globalThis.lastCreationResult = lastCreationResult;
         }
         
         console.log(`FIXED scheduler completed: ${successfulBlocks} blocks created, ${tasksScheduled} tasks scheduled, ${failedBlocks} failed`);
@@ -1621,14 +1297,13 @@ async function runEnhancedScheduler(today) {
             workShift: workShift,
             tasksFound: allTasks.length,
             tasksScheduled: tasksScheduled,
-            summary: resultData
+            summary: lastCreationResult
         };
         
     } catch (error) {
         console.error('Critical failure in FIXED scheduler:', error.message);
         console.error('Error stack:', error.stack);
         
-        // FIXED: Set error result safely
         const errorResult = {
             success: 0,
             failed: 1,
@@ -1684,11 +1359,9 @@ async function getCurrentSchedule(today) {
 
                 if (!startTime) return null;
 
-                // Convert UTC stored times back to Pacific for display
                 const pacificStartTime = utcToPacificTime(startTime);
                 const pacificEndTime = endTime ? utcToPacificTime(endTime) : '';
 
-                // Check if block is from today Pacific time
                 const startUTC = new Date(startTime);
                 const pacificDateString = new Intl.DateTimeFormat('en-CA', {
                     timeZone: 'America/Vancouver',
