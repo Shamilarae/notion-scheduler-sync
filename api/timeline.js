@@ -165,6 +165,15 @@ async function getTodaysTasks(today) {
                 const fixedTime = props['Fixed Time']?.date?.start;
                 const scheduleToday = props['Schedule Today?']?.checkbox || false;
                 
+                // Only include tasks that should be scheduled today
+                const shouldScheduleToday = scheduleToday || 
+                    fixedTime || 
+                    (dueDate && new Date(dueDate) <= new Date(today + 'T23:59:59'));
+                
+                if (!shouldScheduleToday) {
+                    return; // Skip tasks not meant for today
+                }
+                
                 // Calculate priority score (lower = higher priority)
                 let priorityScore = 3;
                 switch(priority) {
@@ -186,7 +195,7 @@ async function getTodaysTasks(today) {
                 if (dueDate) {
                     try {
                         const dueDateTime = new Date(dueDate);
-                        const todayDateTime = new Date(today);
+                        const todayDateTime = new Date(today + 'T00:00:00');
                         const dueDays = Math.ceil((dueDateTime - todayDateTime) / (1000 * 60 * 60 * 24));
                         
                         if (dueDays <= 0) priorityScore = Math.max(1, priorityScore - 2); // Overdue
@@ -217,6 +226,7 @@ async function getTodaysTasks(today) {
                     console.log(`📅 FIXED TIME TASK: "${title}" at ${fixedTimePacific}`);
                 } else {
                     flexibleTasks.push(taskData);
+                    console.log(`🔄 FLEXIBLE TASK: "${title}" (${priority})`);
                 }
                 
             } catch (taskError) {
