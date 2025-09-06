@@ -1779,7 +1779,7 @@ module.exports = async function handler(req, res) {
             meta: {
                 totalBlocks: schedule.length,
                 creationAttempted: action === 'create',
-                lastCreationResult: global.lastCreationResult || null,
+                lastCreationResult: (typeof global !== 'undefined' ? global.lastCreationResult : globalThis.lastCreationResult) || null,
                 processingTimeMs: processingTime,
                 timestamp: now.toISOString(),
                 version: '4.0-Fixed-Task-Assignment',
@@ -1808,10 +1808,12 @@ module.exports = async function handler(req, res) {
         const processingTime = Date.now() - startTime;
         
         console.error('FIXED Scheduler Error:', error.message);
+        console.error('Error stack:', error.stack);
         
         res.status(500).json({ 
             error: 'FIXED scheduler failed',
             details: error.message,
+            stack: error.stack,
             meta: {
                 version: '4.0-Fixed-Task-Assignment',
                 processingTime: processingTime,
