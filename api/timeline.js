@@ -1,4 +1,235 @@
-const { Client } = require('@notionhq/client');
+// Phase 4: Afternoon work blocks - NOW USES THE SHARED TASK POOL
+    const afternoonEnd = workShift.isAtSite ? '16:00' : '15:30';
+    while (getMinutesBetween(currentTime, afternoonEnd) >= 30) {
+        // Check for break needs
+        if (consecutiveWorkMinutes >= breakFrequency && getMinutesBetween(currentTime, afternoonEnd) >= 45) {
+            schedule.push({
+                title: 'Afternoon Break',
+                start: currentTime,
+                duration: 15,
+                type: 'Events',
+                context: 'Personal',
+                energy: 'Low'
+            });
+            currentTime = addMinutes(currentTime, 15);
+            consecutiveWorkMinutes = 0;
+        }
+
+        // Afternoon task assignment - uses the SAME assignBestTask function
+        const workDuration = Math.min(45, getMinutesBetween(currentTime, afternoonEnd));
+        const remainingTask = assignBestTask('Admin'); // Try to get any remaining task
+
+        if (remainingTask) {
+            // Determine appropriate block type based on task and afternoon energy
+            let blockType = 'Admin';
+            let energyReq = 'Med';
+            
+            if (remainingTask.routine) {
+                blockType = 'Routine';
+                energyReq = 'Med';
+            } else if (remainingTask.urgency >= 7 && !isLowEnergy) {
+                blockType = 'Deep Work';
+                energyReq = 'Med'; // Reduced from High for afternoon
+            }
+
+            schedule.push({
+                title: remainingTask.title,
+                start: currentTime,
+                duration: Math.min(workDuration, remainingTask.estimatedTime),
+                type: blockType,
+                context: 'Work',
+                energy: energyReq,
+                taskId: remainingTask.id,
+                details: `Afternoon session - Priority: ${remainingTask.priority}, Urgency: ${remainingTask.urgency}/10`
+            });
+            
+            console.log(`Assigned afternoon task: ${remainingTask.title} (${blockType})`);
+        } else {
+            // Only create generic blocks if we've truly exhausted all tasks
+            const unusedTaskCount = allAvailableTasks.filter(t => !t.used).length;
+            
+            let genericTitle, genericDetails;
+            if (unusedTaskCount > 0) {
+                genericTitle = 'Task Review & Organization';
+                genericDetails = `Review ${unusedTaskCount} remaining items and organize for tomorrow`;
+            } else {
+                genericTitle = 'Strategic Planning Session';
+                genericDetails = 'Plan approach for deferred tasks and future priorities';
+            }
+            
+            schedule.push({
+                title: genericTitle,
+                start: currentTime,
+                duration: workDuration,
+                type: 'Admin',
+                context: 'Work',
+                energy: 'Med',
+                details: genericDetails
+            });
+            
+            console.log(`Created strategic afternoon block: ${genericTitle}`);
+        }
+
+        currentTime = addMinutes(currentTime, workDuration);
+        consecutiveWorkMinutes += workDuration;
+    }
+
+    // Phase 5: End-of-day routine
+    currentTime = afternoonEnd;
+    
+    schedule.push({
+        title: 'Afternoon Wrap-up & Planning',
+        start: currentTime,
+        duration: 45,
+        type: 'Admin',
+        context: 'Work',
+        energy: 'Low',
+        details: 'Email, light tasks, tomorrow planning'
+    });
+    currentTime = addMinutes(currentTime, 45);
+
+    // Personal time
+    const personalDuration = (isLowEnergy || isDrained) ? 150 : 120;
+    const personalTitle = isDrained ? 'Personal Recovery Time' : 'Personal Time';
+    schedule.push({
+        title: personalTitle,
+        start: currentTime,
+        duration: personalDuration,
+        type: 'Events',
+        context: 'Personal',
+        energy: 'Low',
+        details: isDrained ? 'Rest, gentle activities, self-care' : 'Personal projects, relaxation'
+    });
+
+    const tasksScheduled = allAvailableTasks.filter(t => t.used).length;
+    const tasksUnused = allAvailableTasks.filter(t => !t.used).length;
+    console.log(`Schedule created: ${schedule.length} blocks, ${tasksScheduled}/${selectedTasks.length} tasks assigned, ${tasksUnused} unused`);
+    
+    // Debug logging for task assignment
+    if (tasksUnused > 0) {
+        console.log('Unused tasks:', allAvailableTasks.filter(t => !t.used).map(t => t.title));
+    }
+
+    return schedule;
+}
+
+// Helper function to clear all blocks for today
+async function clearAllBlocksForToday(today) {
+    try {
+        const dayRange = getPacificDateRange(today);
+        const existing = await notion.databases.query({
+            database_id: TIME_BLOCKS_DB_ID,
+            filter: {
+                property: 'Start Time',
+                date: {
+                    on_or_after: dayRange.start,
+                    on_or_before: dayRange.end
+                }
+            },
+            page_size: 100
+        });
+
+        let archivedCount = 0;
+        for (const block of existing.results) {
+            try {
+                await notion.pages.update({
+                    page_id: block.id,
+                    archived: true
+                });
+                archivedCount++;
+            } catch (archiveError) {
+                console.error(`Failed to archive block ${block.id}:`, archiveError.message);
+            }
+        }
+        
+        console.log(`Successfully cleared ${archivedCount}/${existing.results.length} blocks for today`);
+        return archivedCount;
+    } catch (error) {
+        console.error('Error clearing blocks:', error.message);
+        return 0;
+    }
+}
+
+// Renamed function to be more specific about AI blocks only
+async function createAITimeBlocksInNotion(schedule, today, dailyLogId) {
+    console.log('Creating AI-generated time blocks in Notion...');
+    
+    const results = [];
+    const energyMapping = { 'Low': 'Low', 'Medium': 'Med', 'High': 'High' };
+
+    // Note: All blocks were already cleared in Step 0, calendar blocks will be recreated in Step 1
+    // Create new AI blocks (calendar blocks were already created in Step 1)
+    for (const block of schedule) {
+        try {
+            if (!block || !block.title || !block.start || !block.duration) {
+                console.warn('Skipping invalid block:', block);
+                continue;
+            }
+            
+            const endTime = addMinutes(block.start, block.duration);
+            const startUTC = pacificTimeToUTC(today, block.start);
+            const endUTC = pacificTimeToUTC(today, endTime);
+            
+            const mappedEnergy = energyMapping[block.energy] || 'Med';
+            
+            const properties = {
+                Title: { title: [{ text: { content: block.title } }] },
+                Type: { select: { name: block.type } },
+                Context: { select: { name: block.context } },
+                'Energy Requirements': { select: { name: mappedEnergy } },
+                Status: { select: { name: 'Planned' } },
+                'Start Time': { date: { start: startUTC } },
+                'End Time': { date: { start: endUTC } },
+                'Auto-Filled': { checkbox: true }
+            };
+            
+            if (block.taskId && typeof block.taskId === 'string') {
+                properties['Tasks'] = { relation: [{ id: block.taskId }] };
+            }
+            
+            if (dailyLogId && typeof dailyLogId === 'string') {
+                properties['Daily Logs'] = { relation: [{ id: dailyLogId }] };
+            }
+
+            if (block.details) {
+                properties['Notes'] = { 
+                    rich_text: [{ text: { content: block.details } }] 
+                };
+            }
+            
+            const timeBlockResponse = await notion.pages.create({
+                parent: { database_id: TIME_BLOCKS_DB_ID },
+                properties: properties
+            });
+            
+            results.push({
+                title: block.title,
+                startTime: block.start,
+                endTime: endTime,
+                type: block.type,
+                context: block.context,
+                energy: mappedEnergy,
+                taskId: block.taskId || null,
+                notionId: timeBlockResponse.id,
+                status: 'created'
+            });
+            
+        } catch (error) {
+            console.error(`Failed to create AI block "${block?.title || 'Unknown'}":`, error.message);
+            results.push({
+                title: block?.title || 'Unknown Block',
+                error: error.message,
+                status: 'failed'
+            });
+        }
+    }
+    
+    const successful = results.filter(r => r.status === 'created').length;
+    const failed = results.filter(r => r.status === 'failed').length;
+    console.log(`AI time blocks created: ${successful} successful, ${failed} failed`);
+    
+    return results;
+}const { Client } = require('@notionhq/client');
 
 // Initialize Notion client
 let notion;
