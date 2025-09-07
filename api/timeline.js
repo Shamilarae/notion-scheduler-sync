@@ -762,29 +762,80 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
             consecutiveWorkMinutes = 0;
         }
 
-        // Afternoon task assignment (lower energy typically)
-        const remainingTask = assignBestTask(tasksCopy, 'Admin');
+        // Smarter afternoon task assignment - try all task types
+        let remainingTask = null;
         const workDuration = Math.min(45, getMinutesBetween(currentTime, afternoonEnd));
 
+        // Try to assign any remaining unscheduled task
+        remainingTask = assignBestTask(tasksCopy, 'Admin');
+        
+        // If no admin tasks, try routine tasks
+        if (!remainingTask) {
+            remainingTask = assignBestTask(routineTasks, 'Routine');
+        }
+        
+        // If still no task, try any remaining task regardless of type
+        if (!remainingTask) {
+            const anyUnusedTask = tasksCopy.find(t => !t.used);
+            if (anyUnusedTask) {
+                anyUnusedTask.used = true;
+                remainingTask = anyUnusedTask;
+            }
+        }
+
         if (remainingTask) {
+            // Determine appropriate block type based on task and afternoon energy
+            let blockType = 'Admin';
+            let energyReq = 'Med';
+            
+            if (remainingTask.routine) {
+                blockType = 'Routine';
+                energyReq = 'Med';
+            } else if (remainingTask.urgency >= 7 && !isLowEnergy) {
+                blockType = 'Deep Work';
+                energyReq = 'Med'; // Reduced from High for afternoon
+            }
+
             schedule.push({
                 title: remainingTask.title,
                 start: currentTime,
                 duration: Math.min(workDuration, remainingTask.estimatedTime),
-                type: 'Admin',
+                type: blockType,
                 context: 'Work',
-                energy: 'Med',
-                taskId: remainingTask.id
+                energy: energyReq,
+                taskId: remainingTask.id,
+                details: `Afternoon session - Priority: ${remainingTask.priority}, Urgency: ${remainingTask.urgency}/10`
             });
+            
+            console.log(`Assigned afternoon task: ${remainingTask.title} (${blockType})`);
         } else {
+            // Only create generic blocks if we've truly exhausted all tasks
+            const unusedTaskCount = tasksCopy.filter(t => !t.used).length;
+            const deferredTaskCount = selectedTasks.length - tasksCopy.filter(t => t.used).length;
+            
+            let genericTitle, genericDetails;
+            if (deferredTaskCount > 0) {
+                genericTitle = 'Strategic Planning & Future Tasks';
+                genericDetails = `Plan approach for ${deferredTaskCount} deferred tasks`;
+            } else if (unusedTaskCount > 0) {
+                genericTitle = 'Task Review & Organization';
+                genericDetails = 'Review remaining items and organize for tomorrow';
+            } else {
+                genericTitle = 'Afternoon Project Work';
+                genericDetails = 'Focus time for ongoing projects and improvements';
+            }
+            
             schedule.push({
-                title: 'Afternoon Project Work',
+                title: genericTitle,
                 start: currentTime,
                 duration: workDuration,
                 type: 'Admin',
                 context: 'Work',
-                energy: 'Med'
+                energy: 'Med',
+                details: genericDetails
             });
+            
+            console.log(`Created strategic afternoon block: ${genericTitle}`);
         }
 
         currentTime = addMinutes(currentTime, workDuration);
@@ -866,7 +917,7 @@ async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
         console.error('Error clearing blocks:', error.message);
     }
 
-    // Create new blocks
+    // Create new AI blocks (calendar blocks were already created in Step 1)
     for (const block of schedule) {
         try {
             if (!block || !block.title || !block.start || !block.duration) {
@@ -923,7 +974,7 @@ async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
             });
             
         } catch (error) {
-            console.error(`Failed to create block "${block?.title || 'Unknown'}":`, error.message);
+            console.error(`Failed to create AI block "${block?.title || 'Unknown'}":`, error.message);
             results.push({
                 title: block?.title || 'Unknown Block',
                 error: error.message,
@@ -934,7 +985,7 @@ async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
     
     const successful = results.filter(r => r.status === 'created').length;
     const failed = results.filter(r => r.status === 'failed').length;
-    console.log(`Time blocks created: ${successful} successful, ${failed} failed`);
+    console.log(`AI time blocks created: ${successful} successful, ${failed} failed`);
     
     return results;
 }
