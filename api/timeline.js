@@ -1,4 +1,4 @@
-// CORRECTED: Get today's tasks with proper Notion API handling
+// FIXED: Just the getTodaysTasks function - replace this in your working script
 async function getTodaysTasks(today) {
     try {
         if (!today || typeof today !== 'string') {
@@ -6,9 +6,9 @@ async function getTodaysTasks(today) {
             return { flexibleTasks: [], fixedTimeTasks: [] };
         }
         
-        console.log('Querying tasks database with CORRECTED filtering...');
+        console.log('Querying tasks database...');
         
-        // Get ALL active tasks - filter logic comes AFTER retrieval
+        // Get ALL active tasks - don't filter by date at query level
         const tasksResponse = await notion.databases.query({
             database_id: TASKS_DB_ID,
             filter: {
@@ -30,7 +30,109 @@ async function getTodaysTasks(today) {
             page_size: 100
         });
 
-        console.log(`Found ${tasksResponse.results.length} total active tasks in database`);
+        console.log(`Found ${tasksResponse.results.length} total tasks in database`);
+
+        const flexibleTasks = [];
+        const fixedTimeTasks = [];
+
+        tasksResponse.results.forEach(task => {
+            try {
+                const props = task.properties;
+                
+                // Get title properly
+                const title = props?.Name?.title?.[0]?.text?.content;
+                if (!title || title.trim() === '') {
+                    return;
+                }
+                
+                const priority = props['Priority Level']?.select?.name || 'Medium';
+                const type = props.Type?.select?.name || 'Admin';
+                const estimatedTime = props['Estimated Duration']?.number || 30;
+                const dueDate = props['Due Date']?.date?.start;
+                const fixedTime = props['Fixed Time']?.date?.start;
+                const scheduleToday = props['Schedule Today?']?.checkbox === true;
+                
+                // Only include tasks that should be scheduled today
+                const shouldScheduleToday = scheduleToday || 
+                    fixedTime || 
+                    (dueDate && new Date(dueDate) <= new Date(today + 'T23:59:59'));
+                
+                if (!shouldScheduleToday) {
+                    return; // Skip tasks not meant for today
+                }
+                
+                // Calculate priority score (lower = higher priority)
+                let priorityScore = 3;
+                switch(priority) {
+                    case 'High':
+                        priorityScore = 1;
+                        break;
+                    case 'Routine':
+                        priorityScore = 2;
+                        break;
+                    case 'Medium':
+                        priorityScore = 3;
+                        break;
+                    case 'Low':
+                        priorityScore = 5;
+                        break;
+                }
+                
+                // Urgency boost for overdue/due today tasks
+                if (dueDate) {
+                    try {
+                        const dueDateTime = new Date(dueDate);
+                        const todayDateTime = new Date(today + 'T00:00:00');
+                        const dueDays = Math.ceil((dueDateTime - todayDateTime) / (1000 * 60 * 60 * 24));
+                        
+                        if (dueDays <= 0) priorityScore = Math.max(1, priorityScore - 2); // Overdue
+                        else if (dueDays <= 1) priorityScore = Math.max(1, priorityScore - 1); // Due today/tomorrow
+                    } catch (dateError) {
+                        console.warn(`Error parsing due date for task ${title}:`, dateError.message);
+                    }
+                }
+                
+                const taskData = {
+                    title: title.trim(),
+                    priority,
+                    priorityScore,
+                    type: type?.toLowerCase().replace(' ', '-') || 'admin', // Convert "Deep Work" to "deep-work"
+                    estimatedTime: Math.max(15, estimatedTime || 30),
+                    dueDate,
+                    fixedTime,
+                    scheduleToday,
+                    id: task.id,
+                    used: false
+                };
+                
+                // Separate fixed-time from flexible tasks
+                if (fixedTime) {
+                    const fixedTimePacific = utcToPacificTime(fixedTime);
+                    taskData.scheduledTime = fixedTimePacific;
+                    fixedTimeTasks.push(taskData);
+                    console.log(`FIXED TIME TASK: "${title}" at ${fixedTimePacific}`);
+                } else {
+                    flexibleTasks.push(taskData);
+                    console.log(`FLEXIBLE TASK: "${title}" (${priority})`);
+                }
+                
+            } catch (taskError) {
+                console.error('Error processing individual task:', taskError.message);
+            }
+        });
+        
+        console.log(`Task categorization complete:`);
+        console.log(`   Fixed Time Tasks: ${fixedTimeTasks.length}`);
+        console.log(`   Flexible Tasks: ${flexibleTasks.length}`);
+        
+        return { flexibleTasks, fixedTimeTasks };
+        
+    } catch (error) {
+        console.error('Error getting tasks:', error.message);
+        console.error('Full error details:', error);
+        return { flexibleTasks: [], fixedTimeTasks: [] };
+    }
+}
 
         const flexibleTasks = [];
         const fixedTimeTasks = [];
@@ -422,3 +524,4 @@ function addEndOfDayBlocks(schedule, workShift) {
         });
     }
 }
+
