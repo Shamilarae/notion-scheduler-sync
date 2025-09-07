@@ -1,111 +1,4 @@
-// Phase 4: Afternoon work blocks - NOW USES THE SHARED TASK POOL
-    const afternoonEnd = workShift.isAtSite ? '16:00' : '15:30';
-    while (getMinutesBetween(currentTime, afternoonEnd) >= 30) {
-        // Check for break needs
-        if (consecutiveWorkMinutes >= breakFrequency && getMinutesBetween(currentTime, afternoonEnd) >= 45) {
-            schedule.push({
-                title: 'Afternoon Break',
-                start: currentTime,
-                duration: 15,
-                type: 'Events',
-                context: 'Personal',
-                energy: 'Low'
-            });
-            currentTime = addMinutes(currentTime, 15);
-            consecutiveWorkMinutes = 0;
-        }
-
-        // Afternoon task assignment - uses the SAME assignBestTask function
-        const workDuration = Math.min(45, getMinutesBetween(currentTime, afternoonEnd));
-        const remainingTask = assignBestTask('Admin'); // Try to get any remaining task
-
-        if (remainingTask) {
-            // Determine appropriate block type based on task and afternoon energy
-            let blockType = 'Admin';
-            let energyReq = 'Med';
-            
-            if (remainingTask.routine) {
-                blockType = 'Routine';
-                energyReq = 'Med';
-            } else if (remainingTask.urgency >= 7 && !isLowEnergy) {
-                blockType = 'Deep Work';
-                energyReq = 'Med'; // Reduced from High for afternoon
-            }
-
-            schedule.push({
-                title: remainingTask.title,
-                start: currentTime,
-                duration: Math.min(workDuration, remainingTask.estimatedTime),
-                type: blockType,
-                context: 'Work',
-                energy: energyReq,
-                taskId: remainingTask.id,
-                details: `Afternoon session - Priority: ${remainingTask.priority}, Urgency: ${remainingTask.urgency}/10`
-            });
-            
-            console.log(`Assigned afternoon task: ${remainingTask.title} (${blockType})`);
-        } else {
-            // Only create generic blocks if we've truly exhausted all tasks
-            const unusedTaskCount = allAvailableTasks.filter(t => !t.used).length;
-            
-            let genericTitle, genericDetails;
-            if (unusedTaskCount > 0) {
-                genericTitle = 'Task Review & Organization';
-                genericDetails = `Review ${unusedTaskCount} remaining items and organize for tomorrow`;
-            } else {
-                genericTitle = 'Strategic Planning Session';
-                genericDetails = 'Plan approach for deferred tasks and future priorities';
-            }
-            
-            schedule.push({
-                title: genericTitle,
-                start: currentTime,
-                duration: workDuration,
-                type: 'Admin',
-                context: 'Work',
-                energy: 'Med',
-                details: genericDetails
-            });
-            
-            console.log(`Created strategic afternoon block: ${genericTitle}`);
-        }
-
-        currentTime = addMinutes(currentTime, workDuration);
-        consecutiveWorkMinutes += workDuration;
-    }
-
-    // Phase 5: End-of-day routine
-    currentTime = afternoonEnd;
-    
-    schedule.push({
-        title: 'Afternoon Wrap-up & Planning',
-        start: currentTime,
-        duration: 45,
-        type: 'Admin',
-        context: 'Work',
-        energy: 'Low',
-        details: 'Email, light tasks, tomorrow planning'
-    });
-    currentTime = addMinutes(currentTime, 45);
-
-    // Personal time
-    const personalDuration = (isLowEnergy || isDrained) ? 150 : 120;
-    const personalTitle = isDrained ? 'Personal Recovery Time' : 'Personal Time';
-    schedule.push({
-        title: personalTitle,
-        start: currentTime,
-        duration: personalDuration,
-        type: 'Events',
-        context: 'Personal',
-        energy: 'Low',
-        details: isDrained ? 'Rest, gentle activities, self-care' : 'Personal projects, relaxation'
-    });
-
-    const tasksScheduled = allAvailableTasks.filter(t => t.used).length;
-    const tasksUnused = allAvailableTasks.filter(t => !t.used).length;
-    console.log(`Schedule created: ${schedule.length} blocks, ${tasksScheduled}/${selectedTasks.length} tasks assigned, ${tasksUnused} unused`);
-    
-    // Debugconst { Client } = require('@notionhq/client');
+const { Client } = require('@notionhq/client');
 
 // Initialize Notion client
 let notion;
@@ -676,7 +569,7 @@ async function collectAndSelectTasks(today, morningData) {
     }
 }
 
-// STEP 5: INTELLIGENT SCHEDULE CREATION
+// STEP 5: INTELLIGENT SCHEDULE CREATION - FIXED AFTERNOON TASK ACCESS
 function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningData) {
     console.log('STEP 5: Creating intelligent schedule...');
     
@@ -697,11 +590,35 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
     const breakFrequency = isLowEnergy || isStressed ? 60 : 90;
     let consecutiveWorkMinutes = 0;
 
-    // Separate tasks by type
-    const tasksCopy = selectedTasks.map(t => ({...t, used: false}));
-    const highPriorityTasks = tasksCopy.filter(t => t.urgency >= 6);
-    const routineTasks = tasksCopy.filter(t => t.routine);
-    const regularTasks = tasksCopy.filter(t => !t.routine && t.urgency < 6);
+    // Create a copy of tasks that can be shared between morning and afternoon
+    const availableTasks = selectedTasks.map(t => ({...t, used: false}));
+    
+    console.log(`Available tasks for scheduling: ${availableTasks.length}`);
+
+    // Smart task assignment function
+    function assignBestTask(blockType) {
+        const unusedTasks = availableTasks.filter(t => !t.used);
+        if (unusedTasks.length === 0) return null;
+        
+        let selectedTask = null;
+        
+        if (blockType === 'Deep Work' && canDeepFocus) {
+            selectedTask = unusedTasks.filter(t => t.urgency >= 6).sort((a, b) => b.urgency - a.urgency)[0] ||
+                          unusedTasks.sort((a, b) => b.urgency - a.urgency)[0];
+        } else if (blockType === 'Routine') {
+            selectedTask = unusedTasks.filter(t => t.routine).sort((a, b) => a.urgency - b.urgency)[0] ||
+                          unusedTasks.sort((a, b) => a.urgency - b.urgency)[0];
+        } else {
+            selectedTask = unusedTasks.sort((a, b) => b.urgency - a.urgency)[0];
+        }
+        
+        if (selectedTask) {
+            selectedTask.used = true;
+            console.log(`Assigned: "${selectedTask.title}" (Priority: ${selectedTask.priority}, Urgency: ${selectedTask.urgency}) to ${blockType}`);
+        }
+        
+        return selectedTask;
+    }
 
     // Phase 1: Morning routine
     if (isLowEnergy || isDrained || needsRecovery) {
@@ -750,29 +667,7 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
         consecutiveWorkMinutes = 30;
     }
 
-    // Phase 2: Task assignment with break management
-    const assignBestTask = (availableTasks, blockType) => {
-        const unusedTasks = availableTasks.filter(t => !t.used);
-        if (unusedTasks.length === 0) return null;
-        
-        let selectedTask = null;
-        
-        if (blockType === 'Deep Work' && canDeepFocus) {
-            selectedTask = highPriorityTasks.find(t => !t.used) || unusedTasks.sort((a, b) => b.urgency - a.urgency)[0];
-        } else if (blockType === 'Routine') {
-            selectedTask = routineTasks.find(t => !t.used) || unusedTasks.sort((a, b) => a.urgency - b.urgency)[0];
-        } else {
-            selectedTask = unusedTasks.sort((a, b) => b.urgency - a.urgency)[0];
-        }
-        
-        if (selectedTask) {
-            selectedTask.used = true;
-        }
-        
-        return selectedTask;
-    };
-
-    // Main work blocks until lunch
+    // Phase 2: Main work blocks until lunch
     const lunchTime = '12:00';
     while (getMinutesBetween(currentTime, lunchTime) >= 30) {
         // Check if we need a break
@@ -797,7 +692,7 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
         if (canDeepFocus && consecutiveWorkMinutes < 60) {
             blockType = 'Deep Work';
             energyReq = 'High';
-        } else if (routineTasks.some(t => !t.used)) {
+        } else if (availableTasks.some(t => !t.used && t.routine)) {
             blockType = 'Routine';
             energyReq = 'Med';
         } else {
@@ -805,7 +700,7 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
             energyReq = isLowEnergy ? 'Low' : 'Med';
         }
 
-        const selectedTask = assignBestTask(tasksCopy, blockType);
+        const selectedTask = assignBestTask(blockType);
         const workDuration = Math.min(blockDuration, getMinutesBetween(currentTime, lunchTime));
 
         if (selectedTask) {
@@ -852,7 +747,7 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
     currentTime = addMinutes(currentTime, lunchDuration);
     consecutiveWorkMinutes = 0;
 
-    // Phase 4: Afternoon work blocks
+    // Phase 4: Afternoon work blocks - FIXED TO USE REMAINING TASKS
     const afternoonEnd = workShift.isAtSite ? '16:00' : '15:30';
     while (getMinutesBetween(currentTime, afternoonEnd) >= 30) {
         // Check for break needs
@@ -869,27 +764,11 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
             consecutiveWorkMinutes = 0;
         }
 
-        // Smarter afternoon task assignment - try all task types
-        let remainingTask = null;
         const workDuration = Math.min(45, getMinutesBetween(currentTime, afternoonEnd));
-
-        // Try to assign any remaining unscheduled task
-        remainingTask = assignBestTask(tasksCopy, 'Admin');
         
-        // If no admin tasks, try routine tasks
-        if (!remainingTask) {
-            remainingTask = assignBestTask(routineTasks, 'Routine');
-        }
+        // Try to assign any remaining task using the same function
+        const remainingTask = assignBestTask('Admin');
         
-        // If still no task, try any remaining task regardless of type
-        if (!remainingTask) {
-            const anyUnusedTask = tasksCopy.find(t => !t.used);
-            if (anyUnusedTask) {
-                anyUnusedTask.used = true;
-                remainingTask = anyUnusedTask;
-            }
-        }
-
         if (remainingTask) {
             // Determine appropriate block type based on task and afternoon energy
             let blockType = 'Admin';
@@ -917,19 +796,15 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
             console.log(`Assigned afternoon task: ${remainingTask.title} (${blockType})`);
         } else {
             // Only create generic blocks if we've truly exhausted all tasks
-            const unusedTaskCount = tasksCopy.filter(t => !t.used).length;
-            const deferredTaskCount = selectedTasks.length - tasksCopy.filter(t => t.used).length;
+            const unusedTaskCount = availableTasks.filter(t => !t.used).length;
             
             let genericTitle, genericDetails;
-            if (deferredTaskCount > 0) {
-                genericTitle = 'Strategic Planning & Future Tasks';
-                genericDetails = `Plan approach for ${deferredTaskCount} deferred tasks`;
-            } else if (unusedTaskCount > 0) {
+            if (unusedTaskCount > 0) {
                 genericTitle = 'Task Review & Organization';
-                genericDetails = 'Review remaining items and organize for tomorrow';
+                genericDetails = `Review ${unusedTaskCount} remaining items and organize for tomorrow`;
             } else {
-                genericTitle = 'Afternoon Project Work';
-                genericDetails = 'Focus time for ongoing projects and improvements';
+                genericTitle = 'Strategic Planning Session';
+                genericDetails = 'Plan approach for future priorities and improvements';
             }
             
             schedule.push({
@@ -976,22 +851,24 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
         details: isDrained ? 'Rest, gentle activities, self-care' : 'Personal projects, relaxation'
     });
 
-    const tasksScheduled = tasksCopy.filter(t => t.used).length;
-    console.log(`Schedule created: ${schedule.length} blocks, ${tasksScheduled}/${selectedTasks.length} tasks assigned`);
+    const tasksScheduled = availableTasks.filter(t => t.used).length;
+    const tasksUnused = availableTasks.filter(t => !t.used).length;
+    console.log(`Schedule created: ${schedule.length} blocks, ${tasksScheduled}/${selectedTasks.length} tasks assigned, ${tasksUnused} unused`);
+    
+    // Debug logging for unused tasks
+    if (tasksUnused > 0) {
+        console.log('Unused tasks that could be scheduled in afternoon:', 
+            availableTasks.filter(t => !t.used).map(t => `"${t.title}" (${t.priority})`));
+    }
 
     return schedule;
 }
 
-// STEP 6: CREATE TIME BLOCKS IN NOTION
-async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
-    console.log('STEP 6: Creating time blocks in Notion...');
-    
-    const results = [];
-    const energyMapping = { 'Low': 'Low', 'Medium': 'Med', 'High': 'High' };
-
-    // Clear existing auto-filled blocks first
+// Clear existing auto-filled blocks
+async function clearAutoFilledBlocks(today) {
     try {
         const dayRange = getPacificDateRange(today);
+        
         const existing = await notion.databases.query({
             database_id: TIME_BLOCKS_DB_ID,
             filter: {
@@ -1023,8 +900,19 @@ async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
     } catch (error) {
         console.error('Error clearing blocks:', error.message);
     }
+}
 
-    // Create new AI blocks (calendar blocks were already created in Step 1)
+// STEP 6: CREATE TIME BLOCKS IN NOTION
+async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
+    console.log('STEP 6: Creating time blocks in Notion...');
+    
+    const results = [];
+    const energyMapping = { 'Low': 'Low', 'Medium': 'Med', 'High': 'High' };
+
+    // Clear existing auto-filled blocks first
+    await clearAutoFilledBlocks(today);
+
+    // Create new blocks
     for (const block of schedule) {
         try {
             if (!block || !block.title || !block.start || !block.duration) {
@@ -1081,7 +969,7 @@ async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
             });
             
         } catch (error) {
-            console.error(`Failed to create AI block "${block?.title || 'Unknown'}":`, error.message);
+            console.error(`Failed to create block "${block?.title || 'Unknown'}":`, error.message);
             results.push({
                 title: block?.title || 'Unknown Block',
                 error: error.message,
@@ -1092,7 +980,7 @@ async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
     
     const successful = results.filter(r => r.status === 'created').length;
     const failed = results.filter(r => r.status === 'failed').length;
-    console.log(`AI time blocks created: ${successful} successful, ${failed} failed`);
+    console.log(`Time blocks created: ${successful} successful, ${failed} failed`);
     
     return results;
 }
@@ -1259,7 +1147,7 @@ async function getDailyLogId(today) {
 
 // MAIN WORKFLOW: Enhanced Scheduler Following Pseudo-Code
 async function runEnhancedSchedulerWorkflow(today) {
-    console.log('🚀 STARTING ENHANCED AI SCHEDULER WORKFLOW...');
+    console.log('Starting Enhanced AI Scheduler Workflow...');
     console.log('Following pseudo-code implementation step by step');
     
     const startTime = Date.now();
@@ -1330,14 +1218,14 @@ async function runEnhancedSchedulerWorkflow(today) {
         };
 
         console.log('\n✅ ENHANCED SCHEDULER COMPLETE');
-        console.log(`⏱️  Processing time: ${Math.round(processingTime/1000 * 10)/10}s`);
-        console.log(`📊 Summary: ${results.summary.blocksCreated} blocks created, ${results.summary.tasksSelected}/${results.summary.tasksConsidered} tasks scheduled`);
+        console.log(`Processing time: ${Math.round(processingTime/1000 * 10)/10}s`);
+        console.log(`Summary: ${results.summary.blocksCreated} blocks created, ${results.summary.tasksSelected}/${results.summary.tasksConsidered} tasks scheduled`);
         
         return results;
 
     } catch (error) {
         const processingTime = Date.now() - startTime;
-        console.error('❌ CRITICAL SCHEDULER FAILURE:', error.message);
+        console.error('CRITICAL SCHEDULER FAILURE:', error.message);
         
         results.success = false;
         results.error = error.message;
@@ -1443,7 +1331,7 @@ module.exports = async function handler(req, res) {
     const startTime = Date.now();
     
     try {
-        console.log('🚀 Enhanced AI Scheduler v5.0 - Full Pseudo-Code Implementation');
+        console.log('Enhanced AI Scheduler v5.1 - Fixed Afternoon Task Assignment');
         
         if (!process.env.NOTION_TOKEN) {
             return res.status(500).json({
@@ -1459,7 +1347,7 @@ module.exports = async function handler(req, res) {
         
         let workflowResults = null;
         if (action === 'create') {
-            console.log('Running FULL enhanced scheduler workflow...');
+            console.log('Running enhanced scheduler workflow...');
             workflowResults = await runEnhancedSchedulerWorkflow(today);
         }
 
@@ -1475,7 +1363,7 @@ module.exports = async function handler(req, res) {
                 creationAttempted: action === 'create',
                 processingTimeMs: processingTime,
                 timestamp: now.toISOString(),
-                version: '5.0-Full-Pseudo-Code',
+                version: '5.1-Fixed-Afternoon-Tasks',
                 calendarEnabled: calendarEnabled,
                 calendarsConfigured: Object.keys(CONTEXT_TYPE_TO_CALENDAR_ID).length
             },
@@ -1509,7 +1397,7 @@ module.exports = async function handler(req, res) {
             details: error.message,
             stack: error.stack,
             meta: {
-                version: '5.0-Full-Pseudo-Code',
+                version: '5.1-Fixed-Afternoon-Tasks',
                 processingTime: processingTime,
                 timestamp: new Date().toISOString(),
                 calendarEnabled: calendarEnabled
