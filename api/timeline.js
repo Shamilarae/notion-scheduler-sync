@@ -165,6 +165,9 @@ async function syncCalendarEventsToTimeBlocks(today) {
         console.log('STEP 1: Syncing calendar events to Time Blocks...');
         const dayRange = getPacificDateRange(today);
         
+        console.log(`Strict filtering for events on ${today} only`);
+        console.log(`Date range: ${dayRange.start} to ${dayRange.end}`);
+        
         // Track processed events to avoid duplicates
         const processedEvents = new Set();
         
@@ -179,7 +182,9 @@ async function syncCalendarEventsToTimeBlocks(today) {
                     timeMin: dayRange.start,
                     timeMax: dayRange.end,
                     singleEvents: true,
-                    maxResults: 50
+                    maxResults: 50,
+                    showDeleted: false,
+                    timeZone: 'America/Vancouver'
                 });
 
                 const events = eventsResponse.data.items || [];
@@ -722,14 +727,22 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
             consecutiveWorkMinutes = 0;
         }
 
-        // Assign work block
+        // Assign work block with PROPER TYPE MAPPING
         let blockType, energyReq;
-        if (canDeepFocus && consecutiveWorkMinutes < 60) {
+        
+        // Check remaining tasks to determine appropriate block type
+        const unusedTasks = availableTasks.filter(t => !t.used);
+        const nextTask = unusedTasks.length > 0 ? unusedTasks.sort((a, b) => b.urgency - a.urgency)[0] : null;
+        
+        if (canDeepFocus && consecutiveWorkMinutes < 60 && nextTask && (nextTask.type === 'deep work' || nextTask.urgency >= 6)) {
             blockType = 'Deep Work';
             energyReq = 'High';
-        } else if (availableTasks.some(t => !t.used && t.routine)) {
+        } else if (nextTask && nextTask.routine) {
             blockType = 'Routine';
             energyReq = 'Med';
+        } else if (nextTask && nextTask.type === 'deep work') {
+            blockType = 'Deep Work';
+            energyReq = isLowEnergy ? 'Med' : 'High';
         } else {
             blockType = 'Admin';
             energyReq = isLowEnergy ? 'Low' : 'Med';
@@ -739,13 +752,28 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
         const workDuration = Math.min(blockDuration, getMinutesBetween(currentTime, lunchTime));
 
         if (selectedTask) {
+            // Override block type based on task type if needed
+            let finalBlockType = blockType;
+            let finalEnergyReq = energyReq;
+            
+            if (selectedTask.type === 'deep work') {
+                finalBlockType = 'Deep Work';
+                finalEnergyReq = isLowEnergy ? 'Med' : 'High';
+            } else if (selectedTask.routine) {
+                finalBlockType = 'Routine';
+                finalEnergyReq = 'Med';
+            } else if (selectedTask.type === 'admin') {
+                finalBlockType = 'Admin';
+                finalEnergyReq = isLowEnergy ? 'Low' : 'Med';
+            }
+            
             schedule.push({
                 title: selectedTask.title,
                 start: currentTime,
                 duration: Math.min(workDuration, selectedTask.estimatedTime),
-                type: blockType,
+                type: finalBlockType,
                 context: 'Work',
-                energy: energyReq,
+                energy: finalEnergyReq,
                 taskId: selectedTask.id,
                 details: `Priority: ${selectedTask.priority}, Urgency: ${selectedTask.urgency}/10`
             });
@@ -805,16 +833,19 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
         const remainingTask = assignBestTask('Admin');
         
         if (remainingTask) {
-            // Determine appropriate block type based on task and afternoon energy
+            // Determine appropriate block type based on task type and afternoon energy
             let blockType = 'Admin';
             let energyReq = 'Med';
             
-            if (remainingTask.routine) {
+            if (remainingTask.type === 'deep work') {
+                blockType = 'Deep Work';
+                energyReq = isLowEnergy ? 'Med' : 'Med'; // Afternoon deep work is medium energy
+            } else if (remainingTask.routine) {
                 blockType = 'Routine';
                 energyReq = 'Med';
-            } else if (remainingTask.urgency >= 7 && !isLowEnergy) {
-                blockType = 'Deep Work';
-                energyReq = 'Med'; // Reduced from High for afternoon
+            } else if (remainingTask.type === 'admin') {
+                blockType = 'Admin';
+                energyReq = 'Med';
             }
 
             schedule.push({
@@ -828,7 +859,7 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
                 details: `Afternoon session - Priority: ${remainingTask.priority}, Urgency: ${remainingTask.urgency}/10`
             });
             
-            console.log(`Assigned afternoon task: ${remainingTask.title} (${blockType})`);
+            console.log(`Assigned afternoon task: ${remainingTask.title} (${blockType} - was ${remainingTask.type})`);
         } else {
             // Only create generic blocks if we've truly exhausted all tasks
             const unusedTaskCount = availableTasks.filter(t => !t.used).length;
