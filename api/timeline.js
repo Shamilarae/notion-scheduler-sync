@@ -453,7 +453,7 @@ async function getWorkShift(today) {
     }
 }
 
-// STEP 4: INTELLIGENT TASK COLLECTION & SELECTION
+// STEP 4: INTELLIGENT TASK COLLECTION & SELECTION - FIXED QUERY
 async function collectAndSelectTasks(today, morningData) {
     const results = {
         selectedTasks: [],
@@ -464,12 +464,13 @@ async function collectAndSelectTasks(today, morningData) {
 
     try {
         console.log('STEP 4: Collecting and selecting tasks...');
+        console.log(`Today: ${today}, Energy: ${morningData.energy}`);
         
-        // Query all active tasks
+        // Query all active tasks with SIMPLIFIED filter
         const tasksResponse = await notion.databases.query({
             database_id: TASKS_DB_ID,
             filter: {
-                and: [
+                or: [
                     {
                         property: 'Status',
                         select: { does_not_equal: 'Done' }
@@ -477,6 +478,10 @@ async function collectAndSelectTasks(today, morningData) {
                     {
                         property: 'Done',
                         checkbox: { equals: false }
+                    },
+                    {
+                        property: 'Done',
+                        checkbox: { is_empty: true }
                     }
                 ]
             },
@@ -487,12 +492,15 @@ async function collectAndSelectTasks(today, morningData) {
             page_size: 100
         });
 
+        console.log(`Raw task query returned ${tasksResponse.results.length} results`);
+
         const allTasks = tasksResponse.results.map(task => {
             try {
                 const props = task.properties;
                 
                 const title = props?.Name?.title?.[0]?.text?.content;
                 if (!title || title.trim() === '') {
+                    console.warn(`Skipping task with empty title: ${task.id}`);
                     return null;
                 }
                 
@@ -502,6 +510,14 @@ async function collectAndSelectTasks(today, morningData) {
                 const dueDate = props['Due Date']?.date?.start;
                 const fixedTime = props['Fixed Time']?.date?.start;
                 const carryover = props.Carryover?.checkbox || false;
+                const status = props.Status?.select?.name;
+                const done = props.Done?.checkbox;
+                
+                // Skip if explicitly done
+                if (status === 'Done' || done === true) {
+                    console.log(`Skipping completed task: ${title}`);
+                    return null;
+                }
                 
                 // Calculate urgency score (1-10)
                 let urgency = 3; // default
@@ -529,7 +545,7 @@ async function collectAndSelectTasks(today, morningData) {
                 else if (estimatedTime > 30) effort = 2; // medium
                 else effort = 1; // small
                 
-                return {
+                const taskObj = {
                     id: task.id,
                     title: title.trim(),
                     priority,
@@ -541,8 +557,14 @@ async function collectAndSelectTasks(today, morningData) {
                     urgency,
                     effort,
                     routine: priority === 'Routine',
-                    used: false
+                    used: false,
+                    status: status,
+                    done: done
                 };
+                
+                console.log(`Found task: "${taskObj.title}" (${taskObj.priority}, ${taskObj.type}, urgency: ${taskObj.urgency})`);
+                return taskObj;
+                
             } catch (taskError) {
                 console.error('Error processing task:', taskError.message);
                 results.errors.push(`Task processing error: ${taskError.message}`);
@@ -551,7 +573,12 @@ async function collectAndSelectTasks(today, morningData) {
         }).filter(task => task !== null);
 
         results.totalTasks = allTasks.length;
-        console.log(`Found ${allTasks.length} active tasks`);
+        console.log(`Filtered to ${allTasks.length} valid tasks`);
+
+        if (allTasks.length === 0) {
+            console.warn('No tasks found! Check task database and filters');
+            return results;
+        }
 
         // Calculate available capacity
         const isLowEnergy = morningData.energy <= 5;
@@ -560,41 +587,20 @@ async function collectAndSelectTasks(today, morningData) {
         const bufferMinutes = availableMinutes * 0.2; // 20% buffer
         const workingCapacity = availableMinutes - bufferMinutes;
 
-        // Smart task selection
+        // Smart task selection - SELECT ALL TASKS FOR NOW
         let usedCapacity = 0;
         
-        // Phase 1: Must-do tasks (urgency >= 8)
-        const mustDoTasks = allTasks.filter(t => t.urgency >= 8).sort((a, b) => b.urgency - a.urgency);
-        for (const task of mustDoTasks) {
+        for (const task of allTasks) {
             if (usedCapacity + task.estimatedTime <= workingCapacity) {
                 results.selectedTasks.push(task);
                 usedCapacity += task.estimatedTime;
                 task.used = true;
+                console.log(`Selected task: "${task.title}" (${task.priority})`);
+            } else {
+                results.deferredTasks.push(task);
+                console.log(`Deferred task: "${task.title}" (${task.priority}) - capacity exceeded`);
             }
         }
-
-        // Phase 2: Should-do tasks (urgency 6-7)
-        const shouldDoTasks = allTasks.filter(t => t.urgency >= 6 && !t.used).sort((a, b) => b.urgency - a.urgency);
-        for (const task of shouldDoTasks) {
-            if (usedCapacity + task.estimatedTime <= workingCapacity) {
-                results.selectedTasks.push(task);
-                usedCapacity += task.estimatedTime;
-                task.used = true;
-            }
-        }
-
-        // Phase 3: Fill remaining capacity
-        const remainingTasks = allTasks.filter(t => !t.used).sort((a, b) => b.urgency - a.urgency);
-        for (const task of remainingTasks) {
-            if (usedCapacity + task.estimatedTime <= workingCapacity) {
-                results.selectedTasks.push(task);
-                usedCapacity += task.estimatedTime;
-                task.used = true;
-            }
-        }
-
-        // All unused tasks are deferred
-        results.deferredTasks = allTasks.filter(t => !t.used);
 
         console.log(`Task selection complete: ${results.selectedTasks.length} selected, ${results.deferredTasks.length} deferred`);
         console.log(`Capacity utilization: ${Math.round(usedCapacity/60 * 10)/10}/${availableHours} hours`);
@@ -604,6 +610,7 @@ async function collectAndSelectTasks(today, morningData) {
     } catch (error) {
         const errorMsg = `Task collection failed: ${error.message}`;
         console.error(errorMsg);
+        console.error('Full error:', error);
         results.errors.push(errorMsg);
         return results;
     }
