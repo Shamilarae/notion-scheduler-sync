@@ -146,13 +146,14 @@ function getMinutesBetween(startTime, endTime) {
     }
 }
 
-// STEP 1: CALENDAR SYNC IN (Existing Events → Time Blocks)
+// STEP 1: CALENDAR SYNC IN (Existing Events → Time Blocks) - WITH DEDUPLICATION
 async function syncCalendarEventsToTimeBlocks(today) {
     const results = {
         imported: 0,
         updated: 0,
         errors: [],
-        details: []
+        details: [],
+        duplicatesSkipped: 0
     };
 
     if (!calendarEnabled) {
@@ -163,6 +164,9 @@ async function syncCalendarEventsToTimeBlocks(today) {
     try {
         console.log('STEP 1: Syncing calendar events to Time Blocks...');
         const dayRange = getPacificDateRange(today);
+        
+        // Track processed events to avoid duplicates
+        const processedEvents = new Set();
         
         // Import from all specialized calendars
         for (const [contextType, calendarId] of Object.entries(CONTEXT_TYPE_TO_CALENDAR_ID)) {
@@ -188,12 +192,43 @@ async function syncCalendarEventsToTimeBlocks(today) {
                             continue;
                         }
 
+                        // STRICT DATE FILTERING - only events that actually occur today
+                        const eventStartUTC = new Date(event.start.dateTime);
+                        const eventPacificDate = new Intl.DateTimeFormat('en-CA', {
+                            timeZone: 'America/Vancouver',
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit'
+                        }).format(eventStartUTC);
+
+                        if (eventPacificDate !== today) {
+                            console.log(`Skipping event from different date: "${event.summary}" (${eventPacificDate} != ${today})`);
+                            continue;
+                        }
+
                         const title = event.summary || 'Untitled Event';
                         const startTime = utcToPacificTime(event.start.dateTime);
                         const endTime = utcToPacificTime(event.end.dateTime);
+                        
+                        // Validate time format - skip if conversion failed
+                        if (!startTime.match(/^\d{2}:\d{2}$/) || !endTime.match(/^\d{2}:\d{2}$/)) {
+                            console.warn(`Skipping event with invalid time format: ${title} (${startTime}-${endTime})`);
+                            continue;
+                        }
+                        
+                        // Create unique key for deduplication based on title and time
+                        const eventKey = `${title}|${startTime}|${endTime}`;
+                        
+                        if (processedEvents.has(eventKey)) {
+                            console.log(`Skipping duplicate event: ${title} at ${startTime} (already processed)`);
+                            results.duplicatesSkipped++;
+                            continue;
+                        }
+                        
+                        processedEvents.add(eventKey);
                         const gCalId = event.id;
 
-                        // Check if Time Block already exists
+                        // Check if Time Block already exists by GCal ID
                         const existingBlocks = await notion.databases.query({
                             database_id: TIME_BLOCKS_DB_ID,
                             filter: {
@@ -264,7 +299,7 @@ async function syncCalendarEventsToTimeBlocks(today) {
             }
         }
 
-        console.log(`Calendar sync complete: ${results.imported} imported, ${results.updated} updated, ${results.errors.length} errors`);
+        console.log(`Calendar sync complete: ${results.imported} imported, ${results.updated} updated, ${results.duplicatesSkipped} duplicates skipped, ${results.errors.length} errors`);
         return results;
 
     } catch (error) {
