@@ -453,7 +453,7 @@ async function getWorkShift(today) {
     }
 }
 
-// STEP 4: INTELLIGENT TASK COLLECTION & SELECTION - SIMPLIFIED FILTERING
+// STEP 4: INTELLIGENT TASK COLLECTION & SELECTION - FIXED WITH SIMPLIFIED FILTERING
 async function collectAndSelectTasks(today, morningData) {
     const results = {
         selectedTasks: [],
@@ -493,7 +493,7 @@ async function collectAndSelectTasks(today, morningData) {
                 }
                 
                 const priority = props['Priority Level']?.select?.name || 'Medium';
-                const type = props.Type?.select?.name || ''; // Keep original case
+                const type = props.Type?.select?.name || '';
                 const estimatedTime = props['Estimated Duration']?.number || 30;
                 const dueDate = props['Due Date']?.date?.start;
                 const fixedTime = props['Fixed Time']?.date?.start;
@@ -536,7 +536,7 @@ async function collectAndSelectTasks(today, morningData) {
                     id: task.id,
                     title: title.trim(),
                     priority,
-                    type: type, // Keep original case for proper matching
+                    type: type || '',
                     estimatedTime: Math.max(30, estimatedTime || 30),
                     dueDate,
                     fixedTime,
@@ -548,7 +548,7 @@ async function collectAndSelectTasks(today, morningData) {
                     status: status
                 };
                 
-                console.log(`Found active task: "${taskObj.title}" (${taskObj.priority}, Type: "${taskObj.type}", Status: ${taskObj.status}, urgency: ${taskObj.urgency})`);
+                console.log(`Found active task: "${taskObj.title}" (${taskObj.priority}, Type: "${taskObj.type}", urgency: ${taskObj.urgency})`);
                 return taskObj;
                 
             } catch (taskError) {
@@ -573,7 +573,7 @@ async function collectAndSelectTasks(today, morningData) {
         const bufferMinutes = availableMinutes * 0.2; // 20% buffer
         const workingCapacity = availableMinutes - bufferMinutes;
 
-        // Smart task selection
+        // Smart task selection - SELECT ALL TASKS FOR NOW
         let usedCapacity = 0;
         
         for (const task of allTasks) {
@@ -581,7 +581,7 @@ async function collectAndSelectTasks(today, morningData) {
                 results.selectedTasks.push(task);
                 usedCapacity += task.estimatedTime;
                 task.used = true;
-                console.log(`Selected task: "${task.title}" (${task.priority}, Type: "${task.type}")`);
+                console.log(`Selected task: "${task.title}" (${task.priority})`);
             } else {
                 results.deferredTasks.push(task);
                 console.log(`Deferred task: "${task.title}" (${task.priority}) - capacity exceeded`);
@@ -602,9 +602,9 @@ async function collectAndSelectTasks(today, morningData) {
     }
 }
 
-// STEP 5: INTELLIGENT SCHEDULE CREATION - FIXED TASK CLASSIFICATION
+// STEP 5: INTELLIGENT SCHEDULE CREATION - FIXED AFTERNOON TASK ACCESS
 function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningData) {
-    console.log('STEP 5: Creating intelligent schedule with PROPER task classification...');
+    console.log('STEP 5: Creating intelligent schedule...');
     
     const schedule = [];
     let currentTime = wakeTime;
@@ -628,83 +628,839 @@ function createIntelligentSchedule(wakeTime, workShift, selectedTasks, morningDa
     
     console.log(`Available tasks for scheduling: ${availableTasks.length}`);
 
-    // FIXED: Smart task classification based on ACTUAL Notion database values
-    function classifyTaskType(task) {
-        if (!task) return { blockType: 'Deep Work', energyReq: 'Med' }; // Default to deep work when no task
-        
-        const taskType = task.type || ''; // Keep original case - your database has "Deep Work", "Admin", etc.
-        const taskPriority = task.priority?.toLowerCase() || '';
-        
-        console.log(`Classifying task: "${task.title}" with Type: "${taskType}" and Priority: "${taskPriority}"`);
-        
-        // Direct mapping from your Notion database Type field
-        // Your actual database values: "Errand", "Creative", "Admin", "Deep Work", "Meeting"
-        switch (taskType) {
-            case 'Admin':
-                return {
-                    blockType: 'Admin',
-                    energyReq: isLowEnergy ? 'Low' : 'Med'
-                };
-            case 'Deep Work':
-                return {
-                    blockType: 'Deep Work',
-                    energyReq: isLowEnergy ? 'Med' : 'High'
-                };
-            case 'Creative':
-                return {
-                    blockType: 'Deep Work', // Creative work is still deep work
-                    energyReq: isLowEnergy ? 'Med' : 'High'
-                };
-            case 'Meeting':
-                return {
-                    blockType: 'Meeting',
-                    energyReq: 'Med'
-                };
-            case 'Errand':
-                return {
-                    blockType: 'Admin', // Errands are admin-level tasks
-                    energyReq: 'Med'
-                };
-            default:
-                // CRITICAL: Tasks with NO Type field default to Deep Work
-                // This catches all your project work that doesn't have Type set
-                console.log(`Task "${task.title}" has no Type field - defaulting to Deep Work`);
-                
-                // Check if it's routine priority
-                if (taskPriority === 'routine') {
-                    return {
-                        blockType: 'Routine',
-                        energyReq: 'Med'
-                    };
-                }
-                
-                // Default for untyped tasks: Deep Work (project work)
-                return {
-                    blockType: 'Deep Work',
-                    energyReq: isLowEnergy ? 'Med' : 'High'
-                };
-        }
-    }
-
-    // Smart task assignment function - UPDATED
-    function assignBestTask(preferredBlockType) {
+    // Smart task assignment function
+    function assignBestTask(blockType) {
         const unusedTasks = availableTasks.filter(t => !t.used);
         if (unusedTasks.length === 0) return null;
         
         let selectedTask = null;
         
-        // Try to match preferred block type first
-        if (preferredBlockType === 'Deep Work' && canDeepFocus) {
-            // Look for high urgency tasks or any project work
-            selectedTask = unusedTasks.filter(t => {
-                const classification = classifyTaskType(t);
-                return classification.blockType === 'Deep Work' && t.urgency >= 6;
-            }).sort((a, b) => b.urgency - a.urgency)[0];
+        if (blockType === 'Deep Work' && canDeepFocus) {
+            selectedTask = unusedTasks.filter(t => t.urgency >= 6).sort((a, b) => b.urgency - a.urgency)[0] ||
+                          unusedTasks.sort((a, b) => b.urgency - a.urgency)[0];
+        } else if (blockType === 'Routine') {
+            selectedTask = unusedTasks.filter(t => t.routine).sort((a, b) => a.urgency - b.urgency)[0] ||
+                          unusedTasks.sort((a, b) => a.urgency - b.urgency)[0];
+        } else {
+            selectedTask = unusedTasks.sort((a, b) => b.urgency - a.urgency)[0];
+        }
+        
+        if (selectedTask) {
+            selectedTask.used = true;
+            console.log(`Assigned: "${selectedTask.title}" (Priority: ${selectedTask.priority}, Urgency: ${selectedTask.urgency}) to ${blockType}`);
+        }
+        
+        return selectedTask;
+    }
+
+    // Phase 1: Morning routine
+    if (isLowEnergy || isDrained || needsRecovery) {
+        schedule.push({
+            title: 'Extended Morning Recovery',
+            start: currentTime,
+            duration: 90,
+            type: 'Events',
+            context: 'Personal',
+            energy: 'Low',
+            details: 'Coffee, gentle movement, ease into day'
+        });
+        currentTime = addMinutes(currentTime, 90);
+        
+        schedule.push({
+            title: 'Light Admin & Check-ins',
+            start: currentTime,
+            duration: 30,
+            type: 'Admin',
+            context: 'Work',
+            energy: 'Low'
+        });
+        currentTime = addMinutes(currentTime, 30);
+        consecutiveWorkMinutes = 30;
+    } else {
+        const morningDuration = workShift.isAtSite ? 30 : 60;
+        schedule.push({
+            title: 'Morning Routine',
+            start: currentTime,
+            duration: morningDuration,
+            type: 'Events',
+            context: 'Personal',
+            energy: 'Med'
+        });
+        currentTime = addMinutes(currentTime, morningDuration);
+        
+        schedule.push({
+            title: 'Morning Planning & Priority Review',
+            start: currentTime,
+            duration: 30,
+            type: 'Admin',
+            context: 'Work',
+            energy: 'Med'
+        });
+        currentTime = addMinutes(currentTime, 30);
+        consecutiveWorkMinutes = 30;
+    }
+
+    // Phase 2: Main work blocks until lunch
+    const lunchTime = '12:00';
+    while (getMinutesBetween(currentTime, lunchTime) >= 30) {
+        // Check if we need a break
+        if (consecutiveWorkMinutes >= breakFrequency && getMinutesBetween(currentTime, lunchTime) >= 45) {
+            const breakDuration = isLowEnergy || isDrained ? 20 : 15;
+            const breakTitle = isDrained ? 'Recovery Break' : 'Energy Break';
+            schedule.push({
+                title: breakTitle,
+                start: currentTime,
+                duration: breakDuration,
+                type: 'Events',
+                context: 'Personal',
+                energy: 'Low',
+                details: isDrained ? 'Rest, hydrate, gentle movement' : 'Stretch, water, fresh air'
+            });
+            currentTime = addMinutes(currentTime, breakDuration);
+            consecutiveWorkMinutes = 0;
+        }
+
+        // Assign work block with PROPER TYPE MAPPING
+        let blockType, energyReq;
+        
+        // Check remaining tasks to determine appropriate block type
+        const unusedTasks = availableTasks.filter(t => !t.used);
+        const nextTask = unusedTasks.length > 0 ? unusedTasks.sort((a, b) => b.urgency - a.urgency)[0] : null;
+        
+        if (canDeepFocus && consecutiveWorkMinutes < 60 && nextTask && (nextTask.type === 'Deep Work' || nextTask.urgency >= 6)) {
+            blockType = 'Deep Work';
+            energyReq = 'High';
+        } else if (nextTask && nextTask.routine) {
+            blockType = 'Routine';
+            energyReq = 'Med';
+        } else if (nextTask && nextTask.type === 'Deep Work') {
+            blockType = 'Deep Work';
+            energyReq = isLowEnergy ? 'Med' : 'High';
+        } else {
+            blockType = 'Admin';
+            energyReq = isLowEnergy ? 'Low' : 'Med';
+        }
+
+        const selectedTask = assignBestTask(blockType);
+        const workDuration = Math.min(blockDuration, getMinutesBetween(currentTime, lunchTime));
+
+        if (selectedTask) {
+            // Override block type based on task type if needed
+            let finalBlockType = blockType;
+            let finalEnergyReq = energyReq;
             
-            // If no high urgency deep work, take any deep work task
-            if (!selectedTask) {
-                selectedTask = unusedTasks.filter(t => {
-                    const classification = classifyTaskType(t);
-                    return classification.blockType === 'Deep Work';
-                }).sort((a, b) => b.urgency - a.urgency)[0];
+            if (selectedTask.type === 'Deep Work') {
+                finalBlockType = 'Deep Work';
+                finalEnergyReq = isLowEnergy ? 'Med' : 'High';
+            } else if (selectedTask.routine) {
+                finalBlockType = 'Routine';
+                finalEnergyReq = 'Med';
+            } else if (selectedTask.type === 'Admin') {
+                finalBlockType = 'Admin';
+                finalEnergyReq = isLowEnergy ? 'Low' : 'Med';
             }
+            
+            schedule.push({
+                title: selectedTask.title,
+                start: currentTime,
+                duration: Math.min(workDuration, selectedTask.estimatedTime),
+                type: finalBlockType,
+                context: 'Work',
+                energy: finalEnergyReq,
+                taskId: selectedTask.id,
+                details: `Priority: ${selectedTask.priority}, Urgency: ${selectedTask.urgency}/10`
+            });
+        } else {
+            const genericTitle = blockType === 'Deep Work' ? 'Deep Focus Session' : 
+                               blockType === 'Routine' ? 'Routine Tasks' : 'Project Work';
+            schedule.push({
+                title: genericTitle,
+                start: currentTime,
+                duration: workDuration,
+                type: blockType,
+                context: 'Work',
+                energy: energyReq
+            });
+        }
+
+        currentTime = addMinutes(currentTime, workDuration);
+        consecutiveWorkMinutes += workDuration;
+    }
+
+    // Phase 3: Lunch break
+    currentTime = lunchTime;
+    const lunchDuration = (isLowEnergy || needsRecovery || isDrained) ? 90 : 60;
+    const lunchTitle = isLowEnergy ? 'Extended Lunch & Rest' : 'Lunch Break';
+    schedule.push({
+        title: lunchTitle,
+        start: currentTime,
+        duration: lunchDuration,
+        type: 'Events',
+        context: 'Personal',
+        energy: 'Low',
+        details: isLowEnergy ? 'Nourish, rest, recharge deeply' : 'Eat, brief walk, recharge'
+    });
+    currentTime = addMinutes(currentTime, lunchDuration);
+    consecutiveWorkMinutes = 0;
+
+    // Phase 4: Afternoon work blocks - FIXED TO USE REMAINING TASKS
+    const afternoonEnd = workShift.isAtSite ? '16:00' : '15:30';
+    while (getMinutesBetween(currentTime, afternoonEnd) >= 30) {
+        // Check for break needs
+        if (consecutiveWorkMinutes >= breakFrequency && getMinutesBetween(currentTime, afternoonEnd) >= 45) {
+            schedule.push({
+                title: 'Afternoon Break',
+                start: currentTime,
+                duration: 15,
+                type: 'Events',
+                context: 'Personal',
+                energy: 'Low'
+            });
+            currentTime = addMinutes(currentTime, 15);
+            consecutiveWorkMinutes = 0;
+        }
+
+        const workDuration = Math.min(45, getMinutesBetween(currentTime, afternoonEnd));
+        
+        // Try to assign any remaining task using the same function
+        const remainingTask = assignBestTask('Admin');
+        
+        if (remainingTask) {
+            // Determine appropriate block type based on task type and afternoon energy
+            let blockType = 'Admin';
+            let energyReq = 'Med';
+            
+            if (remainingTask.type === 'Deep Work') {
+                blockType = 'Deep Work';
+                energyReq = isLowEnergy ? 'Med' : 'Med'; // Afternoon deep work is medium energy
+            } else if (remainingTask.routine) {
+                blockType = 'Routine';
+                energyReq = 'Med';
+            } else if (remainingTask.type === 'Admin') {
+                blockType = 'Admin';
+                energyReq = 'Med';
+            }
+
+            schedule.push({
+                title: remainingTask.title,
+                start: currentTime,
+                duration: Math.min(workDuration, remainingTask.estimatedTime),
+                type: blockType,
+                context: 'Work',
+                energy: energyReq,
+                taskId: remainingTask.id,
+                details: `Afternoon session - Priority: ${remainingTask.priority}, Urgency: ${remainingTask.urgency}/10`
+            });
+            
+            console.log(`Assigned afternoon task: ${remainingTask.title} (${blockType} - was ${remainingTask.type})`);
+        } else {
+            // Only create generic blocks if we've truly exhausted all tasks
+            const unusedTaskCount = availableTasks.filter(t => !t.used).length;
+            
+            let genericTitle, genericDetails;
+            if (unusedTaskCount > 0) {
+                genericTitle = 'Task Review & Organization';
+                genericDetails = `Review ${unusedTaskCount} remaining items and organize for tomorrow`;
+            } else {
+                genericTitle = 'Strategic Planning Session';
+                genericDetails = 'Plan approach for future priorities and improvements';
+            }
+            
+            schedule.push({
+                title: genericTitle,
+                start: currentTime,
+                duration: workDuration,
+                type: 'Admin',
+                context: 'Work',
+                energy: 'Med',
+                details: genericDetails
+            });
+            
+            console.log(`Created strategic afternoon block: ${genericTitle}`);
+        }
+
+        currentTime = addMinutes(currentTime, workDuration);
+        consecutiveWorkMinutes += workDuration;
+    }
+
+    // Phase 5: End-of-day routine
+    currentTime = afternoonEnd;
+    
+    schedule.push({
+        title: 'Afternoon Wrap-up & Planning',
+        start: currentTime,
+        duration: 45,
+        type: 'Admin',
+        context: 'Work',
+        energy: 'Low',
+        details: 'Email, light tasks, tomorrow planning'
+    });
+    currentTime = addMinutes(currentTime, 45);
+
+    // Personal time
+    const personalDuration = (isLowEnergy || isDrained) ? 150 : 120;
+    const personalTitle = isDrained ? 'Personal Recovery Time' : 'Personal Time';
+    schedule.push({
+        title: personalTitle,
+        start: currentTime,
+        duration: personalDuration,
+        type: 'Events',
+        context: 'Personal',
+        energy: 'Low',
+        details: isDrained ? 'Rest, gentle activities, self-care' : 'Personal projects, relaxation'
+    });
+
+    const tasksScheduled = availableTasks.filter(t => t.used).length;
+    const tasksUnused = availableTasks.filter(t => !t.used).length;
+    console.log(`Schedule created: ${schedule.length} blocks, ${tasksScheduled}/${selectedTasks.length} tasks assigned, ${tasksUnused} unused`);
+    
+    // Debug logging for unused tasks
+    if (tasksUnused > 0) {
+        console.log('Unused tasks that could be scheduled in afternoon:', 
+            availableTasks.filter(t => !t.used).map(t => `"${t.title}" (${t.priority})`));
+    }
+
+    return schedule;
+}
+
+// Clear existing auto-filled blocks
+async function clearAutoFilledBlocks(today) {
+    try {
+        const dayRange = getPacificDateRange(today);
+        
+        const existing = await notion.databases.query({
+            database_id: TIME_BLOCKS_DB_ID,
+            filter: {
+                and: [
+                    {
+                        property: 'Start Time',
+                        date: {
+                            on_or_after: dayRange.start,
+                            on_or_before: dayRange.end
+                        }
+                    },
+                    {
+                        property: 'Auto-Filled',
+                        checkbox: { equals: true }
+                    }
+                ]
+            },
+            page_size: 100
+        });
+
+        for (const block of existing.results) {
+            await notion.pages.update({
+                page_id: block.id,
+                archived: true
+            });
+        }
+        
+        console.log(`Cleared ${existing.results.length} existing auto-filled blocks`);
+    } catch (error) {
+        console.error('Error clearing blocks:', error.message);
+    }
+}
+
+// STEP 6: CREATE TIME BLOCKS IN NOTION
+async function createTimeBlocksInNotion(schedule, today, dailyLogId) {
+    console.log('STEP 6: Creating time blocks in Notion...');
+    
+    const results = [];
+    const energyMapping = { 'Low': 'Low', 'Medium': 'Med', 'High': 'High' };
+
+    // Clear existing auto-filled blocks first
+    await clearAutoFilledBlocks(today);
+
+    // Create new blocks
+    for (const block of schedule) {
+        try {
+            if (!block || !block.title || !block.start || !block.duration) {
+                console.warn('Skipping invalid block:', block);
+                continue;
+            }
+            
+            const endTime = addMinutes(block.start, block.duration);
+            const startUTC = pacificTimeToUTC(today, block.start);
+            const endUTC = pacificTimeToUTC(today, endTime);
+            
+            const mappedEnergy = energyMapping[block.energy] || 'Med';
+            
+            const properties = {
+                Title: { title: [{ text: { content: block.title } }] },
+                Type: { select: { name: block.type } },
+                Context: { select: { name: block.context } },
+                'Energy Requirements': { select: { name: mappedEnergy } },
+                Status: { select: { name: 'Planned' } },
+                'Start Time': { date: { start: startUTC } },
+                'End Time': { date: { start: endUTC } },
+                'Auto-Filled': { checkbox: true }
+            };
+            
+            if (block.taskId && typeof block.taskId === 'string') {
+                properties['Tasks'] = { relation: [{ id: block.taskId }] };
+            }
+            
+            if (dailyLogId && typeof dailyLogId === 'string') {
+                properties['Daily Logs'] = { relation: [{ id: dailyLogId }] };
+            }
+
+            if (block.details) {
+                properties['Notes'] = { 
+                    rich_text: [{ text: { content: block.details } }] 
+                };
+            }
+            
+            const timeBlockResponse = await notion.pages.create({
+                parent: { database_id: TIME_BLOCKS_DB_ID },
+                properties: properties
+            });
+            
+            results.push({
+                title: block.title,
+                startTime: block.start,
+                endTime: endTime,
+                type: block.type,
+                context: block.context,
+                energy: mappedEnergy,
+                taskId: block.taskId || null,
+                notionId: timeBlockResponse.id,
+                status: 'created'
+            });
+            
+        } catch (error) {
+            console.error(`Failed to create block "${block?.title || 'Unknown'}":`, error.message);
+            results.push({
+                title: block?.title || 'Unknown Block',
+                error: error.message,
+                status: 'failed'
+            });
+        }
+    }
+    
+    const successful = results.filter(r => r.status === 'created').length;
+    const failed = results.filter(r => r.status === 'failed').length;
+    console.log(`Time blocks created: ${successful} successful, ${failed} failed`);
+    
+    return results;
+}
+
+// STEP 7: CALENDAR SYNC OUT (Time Blocks → Google Calendar)
+async function syncTimeBlocksToCalendar(today) {
+    const results = {
+        created: 0,
+        updated: 0,
+        errors: []
+    };
+
+    if (!calendarEnabled) {
+        console.log('STEP 7: Calendar sync disabled - skipping export');
+        return results;
+    }
+
+    try {
+        console.log('STEP 7: Syncing AI-generated time blocks to calendar...');
+        
+        // Get AI-generated time blocks for today
+        const dayRange = getPacificDateRange(today);
+        const timeBlocks = await notion.databases.query({
+            database_id: TIME_BLOCKS_DB_ID,
+            filter: {
+                and: [
+                    {
+                        property: 'Start Time',
+                        date: {
+                            on_or_after: dayRange.start,
+                            on_or_before: dayRange.end
+                        }
+                    },
+                    {
+                        property: 'Auto-Filled',
+                        checkbox: { equals: true }
+                    }
+                ]
+            },
+            sorts: [{ property: 'Start Time', direction: 'ascending' }],
+            page_size: 100
+        });
+
+        console.log(`Found ${timeBlocks.results.length} AI-generated blocks to sync`);
+
+        for (const block of timeBlocks.results) {
+            try {
+                const props = block.properties;
+                const title = props.Title?.title?.[0]?.text?.content || 'Untitled';
+                const context = props.Context?.select?.name || 'Personal';
+                const type = props.Type?.select?.name || 'Events';
+                const startTime = props['Start Time']?.date?.start;
+                const endTime = props['End Time']?.date?.start;
+                const notes = props.Notes?.rich_text?.[0]?.text?.content || '';
+                const existingGCalId = props['GCal ID']?.rich_text?.[0]?.text?.content;
+
+                if (!startTime || !endTime) {
+                    console.warn(`Skipping block with missing times: ${title}`);
+                    continue;
+                }
+
+                // Determine target calendar
+                const calendarKey = `${context}-${type}`;
+                const calendarId = CONTEXT_TYPE_TO_CALENDAR_ID[calendarKey] || CONTEXT_TYPE_TO_CALENDAR_ID['Personal-Events'];
+
+                // Prepare calendar event
+                const eventData = {
+                    summary: title,
+                    description: `${notes}\n\nAI-generated time block\nContext: ${context}\nType: ${type}`,
+                    start: { 
+                        dateTime: startTime, 
+                        timeZone: 'America/Vancouver' 
+                    },
+                    end: { 
+                        dateTime: endTime, 
+                        timeZone: 'America/Vancouver' 
+                    },
+                    source: { 
+                        title: 'Notion AI Scheduler', 
+                        url: `https://notion.so/${block.id.replace(/-/g, '')}` 
+                    }
+                };
+
+                // Sync to Google Calendar
+                let eventResult;
+                if (existingGCalId) {
+                    try {
+                        // Update existing event
+                        eventResult = await calendar.events.update({
+                            calendarId: calendarId,
+                            eventId: existingGCalId,
+                            resource: eventData
+                        });
+                        results.updated++;
+                        console.log(`Updated calendar event: ${title}`);
+                    } catch (updateError) {
+                        if (updateError.code === 404) {
+                            // Event was deleted, create new one
+                            eventResult = await calendar.events.insert({
+                                calendarId: calendarId,
+                                resource: eventData
+                            });
+                            results.created++;
+                            console.log(`Created new calendar event (old deleted): ${title}`);
+                        } else {
+                            throw updateError;
+                        }
+                    }
+                } else {
+                    // Create new event
+                    eventResult = await calendar.events.insert({
+                        calendarId: calendarId,
+                        resource: eventData
+                    });
+                    results.created++;
+                    console.log(`Created calendar event: ${title} in ${calendarKey} calendar`);
+                }
+
+                // Update Time Block with GCal ID
+                if (eventResult && eventResult.data.id) {
+                    await notion.pages.update({
+                        page_id: block.id,
+                        properties: {
+                            'GCal ID': { 
+                                rich_text: [{ text: { content: eventResult.data.id } }] 
+                            }
+                        }
+                    });
+                }
+
+            } catch (blockError) {
+                const errorMsg = `Failed to sync block "${block.properties.Title?.title?.[0]?.text?.content || 'Unknown'}": ${blockError.message}`;
+                console.error(errorMsg);
+                results.errors.push(errorMsg);
+            }
+        }
+
+        console.log(`Calendar sync complete: ${results.created} created, ${results.updated} updated, ${results.errors.length} errors`);
+        return results;
+
+    } catch (error) {
+        const errorMsg = `Critical calendar sync error: ${error.message}`;
+        console.error(errorMsg);
+        results.errors.push(errorMsg);
+        return results;
+    }
+}
+
+// Get daily log ID helper
+async function getDailyLogId(today) {
+    try {
+        const dailyLogResponse = await notion.databases.query({
+            database_id: DAILY_LOGS_DB_ID,
+            filter: { property: 'Date', date: { equals: today } },
+            page_size: 1
+        });
+        
+        return dailyLogResponse.results.length > 0 ? dailyLogResponse.results[0].id : null;
+    } catch (error) {
+        console.error('Error getting daily log ID:', error.message);
+        return null;
+    }
+}
+
+// MAIN WORKFLOW: Enhanced Scheduler Following Pseudo-Code
+async function runEnhancedSchedulerWorkflow(today) {
+    console.log('Starting Enhanced AI Scheduler Workflow...');
+    console.log('Following pseudo-code implementation step by step');
+    
+    const startTime = Date.now();
+    const results = {
+        success: true,
+        steps: {},
+        errors: [],
+        summary: {}
+    };
+
+    try {
+        // STEP 1: Calendar Sync In
+        console.log('\n📅 STEP 1: Calendar Sync In (Events → Time Blocks)');
+        results.steps.calendarSyncIn = await syncCalendarEventsToTimeBlocks(today);
+        
+        // STEP 2: Morning Log Analysis  
+        console.log('\n🌅 STEP 2: Morning Log Analysis');
+        results.steps.morningLog = await getEnhancedMorningLog(today);
+        
+        // STEP 3: Work Shift Detection
+        console.log('\n🏢 STEP 3: Work Shift Detection');
+        results.steps.workShift = await getWorkShift(today);
+        
+        // STEP 4: Task Collection & Selection
+        console.log('\n📋 STEP 4: Intelligent Task Collection & Selection');
+        results.steps.tasks = await collectAndSelectTasks(today, results.steps.morningLog);
+        
+        // STEP 5: Intelligent Schedule Creation
+        console.log('\n🧠 STEP 5: Intelligent Schedule Creation');
+        results.steps.schedule = createIntelligentSchedule(
+            results.steps.morningLog.wakeTime,
+            results.steps.workShift,
+            results.steps.tasks.selectedTasks,
+            results.steps.morningLog
+        );
+        
+        // STEP 6: Create Time Blocks in Notion
+        console.log('\n📝 STEP 6: Creating Time Blocks in Notion');
+        const dailyLogId = await getDailyLogId(today);
+        results.steps.timeBlocks = await createTimeBlocksInNotion(
+            results.steps.schedule, 
+            today, 
+            dailyLogId
+        );
+        
+        // STEP 7: Calendar Sync Out
+        console.log('\n📤 STEP 7: Calendar Sync Out (Time Blocks → Calendar)');
+        results.steps.calendarSyncOut = await syncTimeBlocksToCalendar(today);
+        
+        // Compile summary
+        const processingTime = Date.now() - startTime;
+        results.summary = {
+            processingTimeMs: processingTime,
+            calendarImported: results.steps.calendarSyncIn.imported + results.steps.calendarSyncIn.updated,
+            tasksConsidered: results.steps.tasks.totalTasks,
+            tasksSelected: results.steps.tasks.selectedTasks.length,
+            tasksDeferred: results.steps.tasks.deferredTasks.length,
+            blocksCreated: results.steps.timeBlocks.filter(b => b.status === 'created').length,
+            blocksToCalendar: results.steps.calendarSyncOut.created + results.steps.calendarSyncOut.updated,
+            totalErrors: [
+                ...results.steps.calendarSyncIn.errors,
+                ...results.steps.tasks.errors,
+                ...results.steps.calendarSyncOut.errors
+            ].length,
+            energyLevel: results.steps.morningLog.energy,
+            workLocation: results.steps.workShift.isAtSite ? 'Site' : 'Home',
+            adaptationsApplied: getAdaptationsApplied(results.steps.morningLog)
+        };
+
+        console.log('\n✅ ENHANCED SCHEDULER COMPLETE');
+        console.log(`Processing time: ${Math.round(processingTime/1000 * 10)/10}s`);
+        console.log(`Summary: ${results.summary.blocksCreated} blocks created, ${results.summary.tasksSelected}/${results.summary.tasksConsidered} tasks scheduled`);
+        
+        return results;
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        console.error('CRITICAL SCHEDULER FAILURE:', error.message);
+        
+        results.success = false;
+        results.error = error.message;
+        results.summary.processingTimeMs = processingTime;
+        results.summary.totalErrors = 1;
+        
+        return results;
+    }
+}
+
+function getAdaptationsApplied(morningData) {
+    const adaptations = [];
+    
+    if (morningData.energy <= 5) adaptations.push('Low energy scheduling');
+    if (morningData.focusCapacity === 'Scattered') adaptations.push('Reduced focus blocks');
+    if (morningData.mood === 'Drained') adaptations.push('Extended recovery time');
+    if (morningData.sleepHours < 6) adaptations.push('Sleep recovery protocol');
+    if (morningData.stressLevel === 'Maxed Out') adaptations.push('Stress management breaks');
+    if (morningData.bodyStatus === 'Achy') adaptations.push('Gentle activity blocks');
+    
+    return adaptations.length > 0 ? adaptations : ['Standard scheduling'];
+}
+
+// Display current schedule (for timeline generation)
+async function getCurrentSchedule(today) {
+    try {
+        const dayRange = getPacificDateRange(today);
+        
+        const timeBlocks = await notion.databases.query({
+            database_id: TIME_BLOCKS_DB_ID,
+            filter: {
+                property: 'Start Time',
+                date: {
+                    on_or_after: dayRange.start,
+                    on_or_before: dayRange.end
+                }
+            },
+            sorts: [{ property: 'Start Time', direction: 'ascending' }],
+            page_size: 100
+        });
+
+        const schedule = timeBlocks.results.map(block => {
+            try {
+                const startTime = block.properties['Start Time']?.date?.start;
+                const endTime = block.properties['End Time']?.date?.start;
+                const title = block.properties.Title?.title?.[0]?.text?.content || 'Untitled';
+                const type = block.properties.Type?.select?.name || 'Events';
+                const context = block.properties.Context?.select?.name || 'Personal';
+                const autoFilled = block.properties['Auto-Filled']?.checkbox || false;
+                const hasTask = block.properties.Tasks?.relation?.length > 0;
+
+                if (!startTime) return null;
+
+                const pacificStartTime = utcToPacificTime(startTime);
+                const pacificEndTime = endTime ? utcToPacificTime(endTime) : '';
+
+                return {
+                    time: pacificStartTime,
+                    endTime: pacificEndTime,
+                    title,
+                    type: getTypeClass(type),
+                    energy: 'medium',
+                    details: `${context} • ${type}${hasTask ? ' • Task Assigned' : ''}${autoFilled ? ' • AI Enhanced' : ''}`
+                };
+            } catch (error) {
+                console.error('Error processing schedule block:', error.message);
+                return null;
+            }
+        }).filter(block => block !== null);
+
+        return schedule;
+
+    } catch (error) {
+        console.error('Failed to get current schedule:', error.message);
+        return [];
+    }
+}
+
+function getTypeClass(type) {
+    const typeMapping = {
+        'Deep Work': 'deep-work',
+        'Admin': 'admin',
+        'Events': 'personal',
+        'Meeting': 'meeting',
+        'Routine': 'routine',
+        'Appointment': 'meeting',
+        'Travel': 'admin'
+    };
+    
+    return typeMapping[type] || 'personal';
+}
+
+// Vercel handler
+module.exports = async function handler(req, res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
+
+    const startTime = Date.now();
+    
+    try {
+        console.log('Enhanced AI Scheduler v5.1 - Fixed Task Filtering');
+        
+        if (!process.env.NOTION_TOKEN) {
+            return res.status(500).json({
+                error: 'Server configuration error',
+                details: 'Missing NOTION_TOKEN'
+            });
+        }
+        
+        const today = new Date().toISOString().split('T')[0];
+        const action = req.query.action || 'display';
+        
+        console.log(`Processing request: action=${action}, date=${today}`);
+        
+        let workflowResults = null;
+        if (action === 'create') {
+            console.log('Running enhanced scheduler workflow...');
+            workflowResults = await runEnhancedSchedulerWorkflow(today);
+        }
+
+        const schedule = await getCurrentSchedule(today);
+        const now = new Date();
+        const processingTime = Date.now() - startTime;
+        
+        const response = {
+            schedule: schedule,
+            workflow: workflowResults,
+            meta: {
+                totalBlocks: schedule.length,
+                creationAttempted: action === 'create',
+                processingTimeMs: processingTime,
+                timestamp: now.toISOString(),
+                version: '5.1-Fixed-Task-Filtering',
+                calendarEnabled: calendarEnabled,
+                calendarsConfigured: Object.keys(CONTEXT_TYPE_TO_CALENDAR_ID).length
+            },
+            display: {
+                lastUpdate: now.toLocaleTimeString('en-US', { 
+                    hour: '2-digit', 
+                    minute: '2-digit',
+                    timeZone: 'America/Vancouver'
+                }),
+                date: now.toLocaleDateString('en-US', { 
+                    weekday: 'long', 
+                    year: 'numeric', 
+                    month: 'long', 
+                    day: 'numeric' 
+                }),
+                timezone: 'Pacific Time'
+            }
+        };
+
+        console.log(`Enhanced request completed in ${processingTime}ms`);
+        res.status(200).json(response);
+
+    } catch (error) {
+        const processingTime = Date.now() - startTime;
+        
+        console.error('Enhanced Scheduler Error:', error.message);
+        console.error('Error stack:', error.stack);
+        
+        res.status(500).json({ 
+            error: 'Enhanced scheduler failed',
+            details: error.message,
+            stack: error.stack,
+            meta: {
+                version: '5.1-Fixed-Task-Filtering',
+                processingTime: processingTime,
+                timestamp: new Date().toISOString(),
+                calendarEnabled: calendarEnabled
+            }
+        });
+    }
+};
